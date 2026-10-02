@@ -79,6 +79,7 @@ CREATE INDEX IF NOT EXISTS idx_schedules_variant_id ON schedules(variant_id);
 CREATE INDEX IF NOT EXISTS idx_schedules_time_status ON schedules(scheduled_time, status);
 CREATE INDEX IF NOT EXISTS idx_publish_logs_variant_id ON publish_logs(variant_id);
 CREATE INDEX IF NOT EXISTS idx_publish_logs_idempotency ON publish_logs(idempotency_key);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_publish_logs_unique_success ON publish_logs(idempotency_key) WHERE status = 'success';
 `;
 
 export function runMigrations(db) {

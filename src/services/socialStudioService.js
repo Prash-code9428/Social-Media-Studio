@@ -363,30 +363,31 @@ export class SocialStudioService {
     const startTime = Date.now();
     const publisher = this.publisherRegistry.get(variant.platform);
 
-    const publishPayload = {
-      content: variant.content,
-      hashtags: variant.hashtags,
+    const context = {
+      variantId,
+      platform: variant.platform,
       idempotencyKey,
-      metadata: {
-        variantId,
-        platform: variant.platform,
-        immediate: true,
-      },
+      immediate: true,
     };
 
     let result;
     try {
-      result = await publisher.publish(publishPayload);
+      result = await publisher.publish(variant, context);
     } catch (err) {
       result = {
         success: false,
-        externalPostId: null,
+        external_id: null,
+        url: null,
+        published_at: new Date().toISOString(),
+        message: variant.content || variant.body || '',
         error: err.message,
-        durationMs: Date.now() - startTime,
+        duration_ms: Date.now() - startTime,
       };
     }
 
+    const externalId = result.external_id || result.externalPostId || null;
     const logStatus = result.success ? PUBLISH_STATUS.SUCCESS : PUBLISH_STATUS.FAILURE;
+
     const logEntry = this.dbCtx.publishLogs.create({
       scheduleId: null,
       variantId,
@@ -394,11 +395,11 @@ export class SocialStudioService {
       idempotencyKey,
       attemptNumber: 1,
       status: logStatus,
-      externalPostId: result.externalPostId || null,
-      requestPayload: publishPayload,
-      responsePayload: result.rawResponse || null,
+      externalPostId: externalId,
+      requestPayload: { variant, context },
+      responsePayload: result.raw_response || result.rawResponse || result,
       errorMessage: result.error || null,
-      durationMs: result.durationMs || (Date.now() - startTime),
+      durationMs: result.duration_ms || result.durationMs || (Date.now() - startTime),
     });
 
     if (result.success) {
@@ -409,7 +410,12 @@ export class SocialStudioService {
       success: result.success,
       variantId,
       platform: variant.platform,
-      externalPostId: result.externalPostId,
+      external_id: externalId,
+      externalPostId: externalId,
+      url: result.url || null,
+      published_at: result.published_at || new Date().toISOString(),
+      message: result.message || variant.content || '',
+      preview: result.preview || null,
       logEntry,
       error: result.error,
     };
@@ -419,6 +425,14 @@ export class SocialStudioService {
 
   getPublishLogs(filters) {
     return this.dbCtx.publishLogs.findAll(filters);
+  }
+
+  getPublishHistory(filters = {}) {
+    return this.dbCtx.publishLogs.getPublishHistory(filters);
+  }
+
+  getPublishHistoryByVariantId(variantId, filters = {}) {
+    return this.dbCtx.publishLogs.getPublishHistory({ ...filters, variantId });
   }
 
   listProfiles() {

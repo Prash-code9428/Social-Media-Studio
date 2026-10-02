@@ -1,18 +1,33 @@
 /**
- * @typedef {Object} PublishPayload
- * @property {string} content
- * @property {string[]} [hashtags]
- * @property {string} idempotencyKey
+ * @typedef {Object} PublishContext
+ * @property {string} [scheduleId]
+ * @property {string} [variantId]
+ * @property {string} [idempotencyKey]
+ * @property {boolean} [immediate]
  * @property {object} [metadata]
+ */
+
+/**
+ * @typedef {Object} VariantInput
+ * @property {string} [id]
+ * @property {string} [body]
+ * @property {string} [content]
+ * @property {string[]} [hashtags]
+ * @property {string} [platform]
+ * @property {string} [tone]
  */
 
 /**
  * @typedef {Object} PublishResult
  * @property {boolean} success
- * @property {string} externalPostId
- * @property {object} [rawResponse]
+ * @property {string|null} external_id
+ * @property {string|null} url
+ * @property {string} published_at
+ * @property {string} message
+ * @property {string} [preview]
  * @property {string} [error]
- * @property {number} durationMs
+ * @property {number} [duration_ms]
+ * @property {object} [raw_response]
  */
 
 export class SocialPublisher {
@@ -27,11 +42,12 @@ export class SocialPublisher {
   }
 
   /**
-   * Publish payload to target platform. Must be implemented by subclasses.
-   * @param {PublishPayload} payload
+   * Publish variant content to the social target.
+   * @param {VariantInput|object} variant - The variant object or content payload
+   * @param {PublishContext} [context] - Context containing scheduleId, idempotencyKey, etc.
    * @returns {Promise<PublishResult>}
    */
-  async publish(payload) {
+  async publish(variant, context = {}) {
     throw new Error(`Method 'publish()' must be implemented by ${this.constructor.name}`);
   }
 
@@ -42,8 +58,8 @@ export class SocialPublisher {
    * @returns {string}
    */
   formatMessage(content, hashtags = []) {
-    if (!hashtags || hashtags.length === 0) return content;
+    if (!hashtags || hashtags.length === 0) return content || '';
     const formatted = hashtags.map((t) => (t.startsWith('#') ? t : `#${t}`)).join(' ');
-    return `${content}\n\n${formatted}`;
+    return `${content || ''}\n\n${formatted}`.trim();
   }
 }

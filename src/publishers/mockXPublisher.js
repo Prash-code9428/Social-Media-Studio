@@ -1,5 +1,4 @@
 import { SocialPublisher } from './socialPublisher.js';
-import { PLATFORMS } from '../config/constants.js';
 
 export class MockXPublisher extends SocialPublisher {
   /**
@@ -8,33 +7,40 @@ export class MockXPublisher extends SocialPublisher {
    * @param {number} [options.latencyMs]
    */
   constructor(options = {}) {
-    super(PLATFORMS.X);
+    super('mock_x');
     this.failureRate = options.failureRate !== undefined ? options.failureRate : 0;
     this.latencyMs = options.latencyMs !== undefined ? options.latencyMs : 150;
   }
 
-  async publish(payload) {
+  async publish(variant, context = {}) {
     const startTime = Date.now();
+    const content = variant.content !== undefined ? variant.content : (variant.body || '');
+    const hashtags = variant.hashtags || [];
+    const message = this.formatMessage(content, hashtags);
 
-    // Simulate realistic network latency
+    // Simulate network latency
     if (this.latencyMs > 0) {
       await new Promise((resolve) => setTimeout(resolve, this.latencyMs));
     }
 
-    // Simulate controlled failure for error testing
     if (this.failureRate > 0 && Math.random() < this.failureRate) {
       return {
         success: false,
+        external_id: null,
         externalPostId: null,
-        error: 'Simulated X API rate limit / 429 Too Many Requests',
-        durationMs: Date.now() - startTime,
+        url: null,
+        published_at: new Date().toISOString(),
+        message,
+        error: 'Simulated X API 429 Too Many Requests: Rate limit exceeded',
+        duration_ms: Date.now() - startTime,
       };
     }
 
-    const message = this.formatMessage(payload.content, payload.hashtags);
     const mockTweetId = `tw_${Date.now()}_${Math.floor(Math.random() * 100000)}`;
+    const tweetUrl = `https://x.com/SocialStudioBot/status/${mockTweetId}`;
+    const preview = `[Twitter/X Preview] (${message.length}/280 chars):\n${message}\nLink: ${tweetUrl}`;
 
-    const mockResponse = {
+    const rawResponse = {
       data: {
         id: mockTweetId,
         text: message,
@@ -44,9 +50,16 @@ export class MockXPublisher extends SocialPublisher {
 
     return {
       success: true,
+      external_id: mockTweetId,
       externalPostId: mockTweetId,
-      rawResponse: mockResponse,
+      url: tweetUrl,
+      published_at: new Date().toISOString(),
+      message,
+      preview,
+      duration_ms: Date.now() - startTime,
       durationMs: Date.now() - startTime,
+      raw_response: rawResponse,
+      rawResponse: rawResponse,
     };
   }
 }

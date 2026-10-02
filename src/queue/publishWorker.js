@@ -84,9 +84,9 @@ export class PublishWorker {
 
     // 3. Atomic claim for processing
     const claimed = this.dbCtx.schedules.claimForProcessing(scheduleId);
-    if (!claimed && schedule.status !== SCHEDULE_STATUS.PROCESSING) {
-      console.warn(`[Worker] Could not claim schedule ${scheduleId} for processing, skipping.`);
-      return { skipped: true, reason: 'lock_failed' };
+    if (!claimed) {
+      console.warn(`[Worker] Could not claim schedule ${scheduleId} for processing (already claimed or processed), skipping.`);
+      return { skipped: true, duplicate: true, reason: 'lock_failed' };
     }
 
     // 4. Retrieve variant details
@@ -101,54 +101,66 @@ export class PublishWorker {
       throw new Error(`Variant ${variantId} status is '${variant.status}' (must be 'approved' to publish)`);
     }
 
-    // 5. Invoke Platform Publisher Adapter
+    // 5. Invoke Platform Publisher Adapter Polymorphically
     const publisher = this.publisherRegistry.get(platform || variant.platform);
-    const publishPayload = {
-      content: variant.content,
-      hashtags: variant.hashtags,
-      idempotencyKey,
-      metadata: {
-        scheduleId,
-        variantId,
-        platform: variant.platform,
-      },
-    };
-
-    let result;
-    try {
-      result = await publisher.publish(publishPayload);
-    } catch (err) {
-      result = {
-        success: false,
-        externalPostId: null,
-        error: err.message,
-        durationMs: Date.now() - startTime,
-      };
-    }
-
-    // 6. Record Audit Log in SQLite (SSOT)
-    const logStatus = result.success ? PUBLISH_STATUS.SUCCESS : PUBLISH_STATUS.FAILURE;
-    const logEntry = this.dbCtx.publishLogs.create({
+    const context = {
       scheduleId,
       variantId,
       platform: variant.platform,
       idempotencyKey,
-      attemptNumber: (job.attemptsMade || 0) + 1,
-      status: logStatus,
-      externalPostId: result.externalPostId || null,
-      requestPayload: publishPayload,
-      responsePayload: result.rawResponse || null,
-      errorMessage: result.error || null,
-      durationMs: result.durationMs || (Date.now() - startTime),
-    });
+    };
+
+    let result;
+    try {
+      result = await publisher.publish(variant, context);
+    } catch (err) {
+      result = {
+        success: false,
+        external_id: null,
+        url: null,
+        published_at: new Date().toISOString(),
+        message: variant.content || variant.body || '',
+        error: err.message,
+        duration_ms: Date.now() - startTime,
+      };
+    }
+
+    const externalId = result.external_id || result.externalPostId || null;
+
+    // 6. Record Audit Log in SQLite (SSOT)
+    const logStatus = result.success ? PUBLISH_STATUS.SUCCESS : PUBLISH_STATUS.FAILURE;
+    let logEntry;
+    try {
+      logEntry = this.dbCtx.publishLogs.create({
+        scheduleId,
+        variantId,
+        platform: variant.platform,
+        idempotencyKey,
+        attemptNumber: (job.attemptsMade || 0) + 1,
+        status: logStatus,
+        externalPostId: externalId,
+        requestPayload: { variant, context },
+        responsePayload: result.raw_response || result.rawResponse || result,
+        errorMessage: result.error || null,
+        durationMs: result.duration_ms || result.durationMs || (Date.now() - startTime),
+      });
+    } catch (dbErr) {
+      if (dbErr.message && dbErr.message.includes('UNIQUE constraint failed')) {
+        console.info(`[Worker] Database UNIQUE constraint prevented duplicate success for idempotency key ${idempotencyKey}.`);
+        const existing = this.dbCtx.publishLogs.findSuccessByIdempotencyKey(idempotencyKey);
+        this.dbCtx.schedules.updateStatus(scheduleId, SCHEDULE_STATUS.COMPLETED);
+        this.dbCtx.variants.updateStatus(variantId, VARIANT_STATUS.PUBLISHED);
+        return { duplicate: true, skipped: true, reason: 'db_unique_constraint_enforced', existingLog: existing };
+      }
+      throw dbErr;
+    }
 
     // 7. Update Schedule & Variant States
     if (result.success) {
       this.dbCtx.schedules.updateStatus(scheduleId, SCHEDULE_STATUS.COMPLETED);
       this.dbCtx.variants.updateStatus(variantId, VARIANT_STATUS.PUBLISHED);
-      return { success: true, logEntry };
+      return { success: true, logEntry, result };
     } else {
-      // If we exhausted all attempts, mark schedule as failed
       if ((job.attemptsMade || 0) + 1 >= (job.opts?.attempts || 3)) {
         this.dbCtx.schedules.updateStatus(scheduleId, SCHEDULE_STATUS.FAILED);
       }
