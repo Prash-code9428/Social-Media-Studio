@@ -10,15 +10,18 @@ export class VariantsRepository {
     postId,
     platform,
     content,
+    body,
     hashtags = [],
-    tone,
+    tone = 'informative',
     status = VARIANT_STATUS.DRAFT,
     validationStatus = VALIDATION_STATUS.PENDING,
     validationErrors = [],
   }) {
     const id = uuidv4();
+    const finalContent = content !== undefined ? content : (body || '');
     const hashtagsJson = JSON.stringify(hashtags);
     const errorsJson = JSON.stringify(validationErrors);
+    const plat = (platform || 'telegram').toLowerCase().trim();
 
     const stmt = this.db.prepare(`
       INSERT INTO post_variants (
@@ -26,7 +29,7 @@ export class VariantsRepository {
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
-    stmt.run(id, postId, platform, content, hashtagsJson, tone, status, validationStatus, errorsJson);
+    stmt.run(id, postId, plat, finalContent, hashtagsJson, tone, status, validationStatus, errorsJson);
     return this.findById(id);
   }
 
@@ -36,9 +39,19 @@ export class VariantsRepository {
     if (!row) return null;
 
     return {
-      ...row,
+      id: row.id,
+      post_id: row.post_id,
+      platform: row.platform,
+      body: row.content,
+      content: row.content,
+      tone: row.tone,
       hashtags: JSON.parse(row.hashtags_json || '[]'),
+      status: row.status,
+      rejection_reason: row.rejection_reason,
+      validation_status: row.validation_status,
       validation_errors: JSON.parse(row.validation_errors_json || '[]'),
+      created_at: row.created_at,
+      updated_at: row.updated_at,
     };
   }
 
@@ -46,19 +59,35 @@ export class VariantsRepository {
     const stmt = this.db.prepare('SELECT * FROM post_variants WHERE post_id = ? ORDER BY created_at ASC');
     const rows = stmt.all(postId);
     return rows.map((row) => ({
-      ...row,
+      id: row.id,
+      post_id: row.post_id,
+      platform: row.platform,
+      body: row.content,
+      content: row.content,
+      tone: row.tone,
       hashtags: JSON.parse(row.hashtags_json || '[]'),
+      status: row.status,
+      rejection_reason: row.rejection_reason,
+      validation_status: row.validation_status,
       validation_errors: JSON.parse(row.validation_errors_json || '[]'),
+      created_at: row.created_at,
+      updated_at: row.updated_at,
     }));
   }
 
-  updateContent(id, { content, hashtags, tone, validationStatus, validationErrors }) {
+  deleteByPostId(postId) {
+    const stmt = this.db.prepare('DELETE FROM post_variants WHERE post_id = ?');
+    return stmt.run(postId).changes;
+  }
+
+  updateContent(id, { content, body, hashtags, tone, validationStatus, validationErrors }) {
     const updates = ['status = ?'];
     const params = [VARIANT_STATUS.DRAFT]; // Content edit resets review status to draft
 
-    if (content !== undefined) {
+    const finalContent = content !== undefined ? content : body;
+    if (finalContent !== undefined) {
       updates.push('content = ?');
-      params.push(content);
+      params.push(finalContent);
     }
     if (hashtags !== undefined) {
       updates.push('hashtags_json = ?');

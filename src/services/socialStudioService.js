@@ -2,7 +2,14 @@ import { IngestionService } from '../ingestion/ingestionService.js';
 import { VariantGenerator } from '../variants/variantGenerator.js';
 import { ConstraintValidator } from '../variants/constraintValidator.js';
 import { generateIdempotencyKey } from '../queue/idempotency.js';
-import { VARIANT_STATUS, VALIDATION_STATUS, SCHEDULE_STATUS, PUBLISH_STATUS } from '../config/constants.js';
+import {
+  VARIANT_STATUS,
+  VALIDATION_STATUS,
+  SCHEDULE_STATUS,
+  PUBLISH_STATUS,
+  CONFIG_PLATFORMS,
+  normalizePlatform,
+} from '../config/constants.js';
 
 export class SocialStudioService {
   /**
@@ -41,10 +48,17 @@ export class SocialStudioService {
 
   // --- 2. VARIANT GENERATION & EDITING ---
 
-  async generateVariantsForPost(postId, { platforms = ['telegram', 'x', 'linkedin'], tone } = {}) {
+  async generateVariantsForPost(postId, { platforms = CONFIG_PLATFORMS, tone, regenerate = false } = {}) {
     const post = this.dbCtx.posts.findById(postId);
     if (!post) {
-      throw new Error(`Post not found with ID: ${postId}`);
+      const err = new Error(`Post not found with ID: ${postId}`);
+      err.code = 'NOT_FOUND';
+      err.statusCode = 404;
+      throw err;
+    }
+
+    if (regenerate) {
+      this.dbCtx.variants.deleteByPostId(postId);
     }
 
     const allProfiles = this.dbCtx.profiles.findAll();
@@ -53,7 +67,8 @@ export class SocialStudioService {
       profilesMap[p.platform] = p;
     }
 
-    const generated = VariantGenerator.generateForPlatforms(post, platforms, profilesMap, tone);
+    const targetPlatforms = platforms && platforms.length > 0 ? platforms : CONFIG_PLATFORMS;
+    const generated = VariantGenerator.generateForPlatforms(post, targetPlatforms, profilesMap, tone);
     const createdVariants = [];
 
     for (const item of generated) {
@@ -61,40 +76,72 @@ export class SocialStudioService {
         postId,
         platform: item.platform,
         content: item.content,
+        body: item.body || item.content,
         hashtags: item.hashtags,
         tone: item.tone,
         status: VARIANT_STATUS.DRAFT,
         validationStatus: item.validation.validationStatus,
         validationErrors: item.validation.errors,
       });
-      createdVariants.push(variant);
+      createdVariants.push({
+        id: variant.id,
+        post_id: variant.post_id,
+        platform: variant.platform,
+        body: variant.body || variant.content,
+        content: variant.content,
+        tone: variant.tone,
+        hashtags: variant.hashtags,
+        status: variant.status,
+        validation_status: variant.validation_status,
+        validation_errors: variant.validation_errors,
+        created_at: variant.created_at,
+        updated_at: variant.updated_at,
+      });
     }
 
     return createdVariants;
   }
 
-  async createCustomVariant(postId, { platform, content, hashtags = [], tone }) {
+  async createCustomVariant(postId, { platform, content, body, hashtags = [], tone = 'informative' }) {
     const post = this.dbCtx.posts.findById(postId);
     if (!post) {
-      throw new Error(`Post not found with ID: ${postId}`);
+      const err = new Error(`Post not found with ID: ${postId}`);
+      err.code = 'NOT_FOUND';
+      err.statusCode = 404;
+      throw err;
     }
 
-    const profile = this.dbCtx.profiles.findByPlatform(platform);
+    const normalizedPlat = normalizePlatform(platform);
+    const profile = this.dbCtx.profiles.findByPlatform(normalizedPlat);
     if (!profile) {
-      throw new Error(`Constraint profile not found for platform: ${platform}`);
+      const err = new Error(`Constraint profile not found for platform: ${platform}`);
+      err.code = 'PROFILE_NOT_FOUND';
+      err.statusCode = 400;
+      throw err;
     }
 
+    const finalContent = content !== undefined ? content : body;
     const validation = ConstraintValidator.validate({
-      content,
+      content: finalContent,
       hashtags,
       tone,
       profile,
     });
 
+    if (!validation.isValid) {
+      const firstError = validation.errors[0]?.message || 'Variant failed validation';
+      const err = new Error(firstError);
+      err.code = 'CONSTRAINT_VALIDATION_ERROR';
+      err.statusCode = 400;
+      err.details = validation.errors;
+      throw err;
+    }
+
     return this.dbCtx.variants.create({
       postId,
-      platform,
-      content,
+      platform: normalizedPlat,
+      content: finalContent,
+      body: finalContent,
       hashtags,
       tone,
       status: VARIANT_STATUS.DRAFT,
@@ -103,13 +150,16 @@ export class SocialStudioService {
     });
   }
 
-  async updateVariant(variantId, { content, hashtags, tone }) {
+  async updateVariant(variantId, { content, body, hashtags, tone }) {
     const variant = this.dbCtx.variants.findById(variantId);
     if (!variant) {
-      throw new Error(`Variant not found with ID: ${variantId}`);
+      const err = new Error(`Variant not found with ID: ${variantId}`);
+      err.code = 'NOT_FOUND';
+      err.statusCode = 404;
+      throw err;
     }
 
-    const newContent = content !== undefined ? content : variant.content;
+    const newContent = content !== undefined ? content : (body !== undefined ? body : variant.content);
     const newHashtags = hashtags !== undefined ? hashtags : variant.hashtags;
     const newTone = tone !== undefined ? tone : variant.tone;
 
@@ -121,8 +171,18 @@ export class SocialStudioService {
       profile,
     });
 
+    if (!validation.isValid) {
+      const firstError = validation.errors[0]?.message || 'Variant failed validation';
+      const err = new Error(firstError);
+      err.code = 'CONSTRAINT_VALIDATION_ERROR';
+      err.statusCode = 400;
+      err.details = validation.errors;
+      throw err;
+    }
+
     return this.dbCtx.variants.updateContent(variantId, {
       content: newContent,
+      body: newContent,
       hashtags: newHashtags,
       tone: newTone,
       validationStatus: validation.validationStatus,
@@ -135,15 +195,19 @@ export class SocialStudioService {
   async approveVariant(variantId) {
     const variant = this.dbCtx.variants.findById(variantId);
     if (!variant) {
-      throw new Error(`Variant not found with ID: ${variantId}`);
+      const err = new Error(`Variant not found with ID: ${variantId}`);
+      err.code = 'NOT_FOUND';
+      err.statusCode = 404;
+      throw err;
     }
 
     if (variant.validation_status !== VALIDATION_STATUS.VALID) {
-      throw new Error(
-        `Cannot approve variant: validation status is '${variant.validation_status}'. Errors: ${JSON.stringify(
-          variant.validation_errors
-        )}`
-      );
+      const firstError = variant.validation_errors?.[0]?.message || 'Variant failed constraint validation';
+      const err = new Error(`Cannot approve variant: ${firstError}`);
+      err.code = 'VALIDATION_FAILED';
+      err.statusCode = 400;
+      err.details = variant.validation_errors;
+      throw err;
     }
 
     return this.dbCtx.variants.updateStatus(variantId, VARIANT_STATUS.APPROVED, null);
@@ -151,12 +215,17 @@ export class SocialStudioService {
 
   async rejectVariant(variantId, reason) {
     if (!reason || typeof reason !== 'string' || reason.trim().length === 0) {
-      throw new Error('Rejection reason is required');
+      const err = new Error('Rejection reason is required');
+      err.statusCode = 400;
+      throw err;
     }
 
     const variant = this.dbCtx.variants.findById(variantId);
     if (!variant) {
-      throw new Error(`Variant not found with ID: ${variantId}`);
+      const err = new Error(`Variant not found with ID: ${variantId}`);
+      err.code = 'NOT_FOUND';
+      err.statusCode = 404;
+      throw err;
     }
 
     return this.dbCtx.variants.updateStatus(variantId, VARIANT_STATUS.REJECTED, reason.trim());
@@ -167,11 +236,17 @@ export class SocialStudioService {
   async scheduleVariant(variantId, scheduledTime) {
     const variant = this.dbCtx.variants.findById(variantId);
     if (!variant) {
-      throw new Error(`Variant not found with ID: ${variantId}`);
+      const err = new Error(`Variant not found with ID: ${variantId}`);
+      err.code = 'NOT_FOUND';
+      err.statusCode = 404;
+      throw err;
     }
 
     if (variant.status !== VARIANT_STATUS.APPROVED) {
-      throw new Error(`Only approved variants can be scheduled (current status: '${variant.status}')`);
+      const err = new Error(`Only approved variants can be scheduled (current status: '${variant.status}')`);
+      err.code = 'UNAPPROVED_VARIANT';
+      err.statusCode = 400;
+      throw err;
     }
 
     const idempotencyKey = generateIdempotencyKey(variantId, scheduledTime);
@@ -211,7 +286,10 @@ export class SocialStudioService {
   async cancelSchedule(scheduleId) {
     const schedule = this.dbCtx.schedules.findById(scheduleId);
     if (!schedule) {
-      throw new Error(`Schedule not found with ID: ${scheduleId}`);
+      const err = new Error(`Schedule not found with ID: ${scheduleId}`);
+      err.code = 'NOT_FOUND';
+      err.statusCode = 404;
+      throw err;
     }
 
     await this.publishQueue.removeJob(scheduleId);
@@ -224,11 +302,17 @@ export class SocialStudioService {
   async publishNow(variantId) {
     const variant = this.dbCtx.variants.findById(variantId);
     if (!variant) {
-      throw new Error(`Variant not found with ID: ${variantId}`);
+      const err = new Error(`Variant not found with ID: ${variantId}`);
+      err.code = 'NOT_FOUND';
+      err.statusCode = 404;
+      throw err;
     }
 
     if (variant.status !== VARIANT_STATUS.APPROVED && variant.status !== VARIANT_STATUS.PUBLISHED) {
-      throw new Error(`Only approved variants can be published (current status: '${variant.status}')`);
+      const err = new Error(`Only approved variants can be published (current status: '${variant.status}')`);
+      err.code = 'UNAPPROVED_VARIANT';
+      err.statusCode = 400;
+      throw err;
     }
 
     const scheduledTime = new Date().toISOString();

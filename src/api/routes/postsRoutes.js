@@ -58,15 +58,25 @@ const listPostsQuerySchema = z.object({
 });
 
 const generateVariantsSchema = z.object({
-  platforms: z.array(z.enum(['telegram', 'x', 'linkedin'])).optional(),
+  platforms: z.array(z.string()).optional(),
   tone: z.string().optional(),
+  regenerate: z.boolean().optional(),
 });
 
 const createCustomVariantSchema = z.object({
-  platform: z.enum(['telegram', 'x', 'linkedin']),
-  content: z.string().min(1, 'Content is required'),
+  platform: z.string().min(1, 'Platform is required'),
+  content: z.string().optional(),
+  body: z.string().optional(),
   hashtags: z.array(z.string()).optional().default([]),
-  tone: z.string().min(1, 'Tone is required'),
+  tone: z.string().optional().default('informative'),
+}).superRefine((data, ctx) => {
+  if (!data.content && !data.body) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'Variant body/content is required',
+      path: ['body'],
+    });
+  }
 });
 
 export function createPostsRouter(service) {
@@ -103,7 +113,7 @@ export function createPostsRouter(service) {
     }
   });
 
-  // Dedicated Ingestion Sub-routes (for backwards compatibility / direct routing)
+  // Dedicated Ingestion Sub-routes (backwards compatibility)
   router.post('/ingest/markdown', validateBody(ingestPostSchema), async (req, res, next) => {
     try {
       const post = await service.ingestMarkdown(req.validatedBody);
@@ -151,7 +161,17 @@ export function createPostsRouter(service) {
     }
   });
 
-  // Generate Variants for Post: POST /posts/:id/generate-variants
+  // Generate Variants for Post: POST /posts/:id/generate
+  router.post('/:id/generate', validateBody(generateVariantsSchema), async (req, res, next) => {
+    try {
+      const variants = await service.generateVariantsForPost(req.params.id, req.validatedBody);
+      res.status(201).json({ success: true, data: variants });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // Compatibility alias: POST /posts/:id/generate-variants
   router.post('/:id/generate-variants', validateBody(generateVariantsSchema), async (req, res, next) => {
     try {
       const variants = await service.generateVariantsForPost(req.params.id, req.validatedBody);

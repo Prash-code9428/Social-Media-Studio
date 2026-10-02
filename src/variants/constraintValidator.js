@@ -16,6 +16,7 @@ export class ConstraintValidator {
     }
 
     const errors = [];
+    const platformName = profile.platform;
 
     // Format hashtags for length calculation
     const formattedHashtags = (hashtags || []).map((tag) => (tag.startsWith('#') ? tag : `#${tag}`));
@@ -27,7 +28,7 @@ export class ConstraintValidator {
     if (!content || typeof content !== 'string' || content.trim().length === 0) {
       errors.push({
         rule: 'EMPTY_CONTENT',
-        message: 'Content cannot be empty',
+        message: `Variant body cannot be empty for ${platformName}`,
       });
     }
 
@@ -35,16 +36,19 @@ export class ConstraintValidator {
     if (totalLength > profile.max_length) {
       errors.push({
         rule: 'MAX_LENGTH_EXCEEDED',
-        message: `Total character length (${totalLength}) exceeds maximum allowed (${profile.max_length}) for platform '${profile.platform}'`,
+        message: `Variant exceeds maximum length for ${platformName}: ${totalLength} > ${profile.max_length}`,
       });
     }
 
     // 3. Allowed Tones Check
-    const allowedTones = Array.isArray(profile.allowed_tones) ? profile.allowed_tones : JSON.parse(profile.allowed_tones_json || '[]');
+    const allowedTones = Array.isArray(profile.allowed_tones)
+      ? profile.allowed_tones
+      : JSON.parse(profile.allowed_tones_json || '[]');
+
     if (tone && allowedTones.length > 0 && !allowedTones.includes(tone.toLowerCase())) {
       errors.push({
         rule: 'INVALID_TONE',
-        message: `Tone '${tone}' is not in allowed tones [${allowedTones.join(', ')}] for platform '${profile.platform}'`,
+        message: `Variant has invalid tone '${tone}' for ${platformName}: allowed tones are [${allowedTones.join(', ')}]`,
       });
     }
 
@@ -53,14 +57,14 @@ export class ConstraintValidator {
     if (profile.max_hashtags !== undefined && tagCount > profile.max_hashtags) {
       errors.push({
         rule: 'MAX_HASHTAGS_EXCEEDED',
-        message: `Hashtags count (${tagCount}) exceeds maximum allowed (${profile.max_hashtags}) for platform '${profile.platform}'`,
+        message: `Variant exceeds hashtag limit for ${platformName}: ${tagCount} > ${profile.max_hashtags}`,
       });
     }
 
     if (profile.min_hashtags !== undefined && tagCount < profile.min_hashtags) {
       errors.push({
         rule: 'MIN_HASHTAGS_REQUIRED',
-        message: `Hashtags count (${tagCount}) is below minimum required (${profile.min_hashtags}) for platform '${profile.platform}'`,
+        message: `Variant requires at least ${profile.min_hashtags} hashtags for ${platformName}: received ${tagCount}`,
       });
     }
 

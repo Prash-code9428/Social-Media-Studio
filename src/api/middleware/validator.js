@@ -1,7 +1,8 @@
 export function validateBody(schema) {
   return (req, res, next) => {
     try {
-      const result = schema.safeParse(req.body);
+      const body = req.body || {};
+      const result = schema.safeParse(body);
       if (!result.success) {
         const issues = result.error.issues || result.error.errors || [];
         return res.status(400).json({
@@ -27,7 +28,8 @@ export function validateBody(schema) {
 export function validateQuery(schema) {
   return (req, res, next) => {
     try {
-      const result = schema.safeParse(req.query);
+      const query = req.query || {};
+      const result = schema.safeParse(query);
       if (!result.success) {
         const issues = result.error.issues || result.error.errors || [];
         return res.status(400).json({

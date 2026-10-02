@@ -1,4 +1,4 @@
-import { PLATFORMS } from '../config/constants.js';
+import { normalizePlatform, CONFIG_PLATFORMS } from '../config/constants.js';
 import { ConstraintValidator } from './constraintValidator.js';
 
 export class VariantGenerator {
@@ -15,7 +15,7 @@ export class VariantGenerator {
       'how', 'why', 'can', 'all', 'into', 'some', 'out', 'other', 'new'
     ]);
 
-    const words = text
+    const words = (text || '')
       .toLowerCase()
       .replace(/[^a-z0-9\s]/g, ' ')
       .split(/\s+/)
@@ -32,28 +32,32 @@ export class VariantGenerator {
 
   /**
    * Generate platform-specific deterministic variants for a post.
-   * @param {object} post
-   * @param {string[]} platforms
+   * @param {object} post - The stored post from SQLite (SSOT)
+   * @param {string[]} [platforms]
    * @param {object} profilesMap
    * @param {string} [requestedTone]
    */
-  static generateForPlatforms(post, platforms, profilesMap, requestedTone) {
+  static generateForPlatforms(post, platforms = CONFIG_PLATFORMS, profilesMap = {}, requestedTone) {
     const variants = [];
+    const targetPlatforms = platforms && platforms.length > 0 ? platforms : CONFIG_PLATFORMS;
 
-    for (const platform of platforms) {
-      const profile = profilesMap[platform];
+    for (const rawPlatform of targetPlatforms) {
+      const normalized = normalizePlatform(rawPlatform);
+      const profile = profilesMap[rawPlatform] || profilesMap[normalized];
       if (!profile) continue;
 
       let generated;
-      switch (platform) {
-        case PLATFORMS.TELEGRAM:
+      switch (normalized) {
+        case 'telegram':
           generated = this.generateTelegramVariant(post, profile, requestedTone);
           break;
-        case PLATFORMS.X:
-          generated = this.generateXVariant(post, profile, requestedTone);
+        case 'mock_x':
+        case 'x':
+          generated = this.generateMockXVariant(post, profile, requestedTone);
           break;
-        case PLATFORMS.LINKEDIN:
-          generated = this.generateLinkedInVariant(post, profile, requestedTone);
+        case 'mock_linkedin':
+        case 'linkedin':
+          generated = this.generateMockLinkedInVariant(post, profile, requestedTone);
           break;
         default:
           continue;
@@ -68,8 +72,9 @@ export class VariantGenerator {
       });
 
       variants.push({
-        platform,
+        platform: rawPlatform, // Preserve exact platform name provided
         content: generated.content,
+        body: generated.content,
         hashtags: generated.hashtags,
         tone: generated.tone,
         validation,
@@ -93,13 +98,13 @@ export class VariantGenerator {
     };
   }
 
-  static generateXVariant(post, profile, requestedTone) {
+  static generateMockXVariant(post, profile, requestedTone) {
     const tone = requestedTone || 'punchy';
     const hashtags = this.extractHashtags(post.title, Math.min(2, profile.max_hashtags || 2));
     if (hashtags.length === 0) hashtags.push('#Tech', '#Updates');
 
     const hashtagString = hashtags.join(' ');
-    // Max length is 280. Leave room for hashtags + whitespace
+    // Max length is 280. Leave room for hashtags + spacing
     const maxCharsForBody = profile.max_length - hashtagString.length - 10;
 
     let body = `🚀 ${post.title}\n\n${post.summary || post.raw_content}`;
@@ -114,7 +119,7 @@ export class VariantGenerator {
     };
   }
 
-  static generateLinkedInVariant(post, profile, requestedTone) {
+  static generateMockLinkedInVariant(post, profile, requestedTone) {
     const tone = requestedTone || 'thought-leadership';
     const hashtags = this.extractHashtags(`${post.title} ${post.summary}`, Math.min(3, profile.max_hashtags || 3));
     if (hashtags.length < (profile.min_hashtags || 2)) {
@@ -122,7 +127,6 @@ export class VariantGenerator {
     }
 
     const sourceRef = post.source_url ? `\n\n📌 Full article & sources: ${post.source_url}` : '';
-
     const content = `💡 **Key Takeaways: ${post.title}**\n\n${post.summary || post.raw_content.slice(0, 600)}\n\nWhat are your thoughts on this approach? Share your perspective in the comments below! 👇${sourceRef}`;
 
     return {

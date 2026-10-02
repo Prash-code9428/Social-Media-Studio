@@ -31,7 +31,7 @@ CREATE TABLE IF NOT EXISTS constraint_profiles (
 CREATE TABLE IF NOT EXISTS post_variants (
     id TEXT PRIMARY KEY,
     post_id TEXT NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
-    platform TEXT NOT NULL CHECK(platform IN ('telegram', 'x', 'linkedin')),
+    platform TEXT NOT NULL CHECK(platform IN ('telegram', 'mock_x', 'mock_linkedin', 'x', 'linkedin')),
     content TEXT NOT NULL,
     hashtags_json TEXT DEFAULT '[]',
     tone TEXT NOT NULL,

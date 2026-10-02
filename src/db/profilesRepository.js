@@ -1,11 +1,14 @@
+import { normalizePlatform } from '../config/constants.js';
+
 export class ProfilesRepository {
   constructor(db) {
     this.db = db;
   }
 
-  findByPlatform(platform) {
-    const stmt = this.db.prepare('SELECT * FROM constraint_profiles WHERE platform = ?');
-    const row = stmt.get(platform);
+  findByPlatform(rawPlatform) {
+    const platform = normalizePlatform(rawPlatform);
+    const stmt = this.db.prepare('SELECT * FROM constraint_profiles WHERE platform = ? OR platform = ?');
+    const row = stmt.get(platform, rawPlatform);
     if (!row) return null;
     return {
       ...row,
@@ -22,7 +25,8 @@ export class ProfilesRepository {
     }));
   }
 
-  update(platform, { maxLength, allowedTones, maxHashtags, minHashtags, mediaAllowed }) {
+  update(rawPlatform, { maxLength, allowedTones, maxHashtags, minHashtags, mediaAllowed }) {
+    const platform = normalizePlatform(rawPlatform);
     const updates = [];
     const params = [];
 
@@ -50,9 +54,9 @@ export class ProfilesRepository {
     if (updates.length === 0) return this.findByPlatform(platform);
 
     updates.push('updated_at = CURRENT_TIMESTAMP');
-    params.push(platform);
+    params.push(platform, rawPlatform);
 
-    const sql = `UPDATE constraint_profiles SET ${updates.join(', ')} WHERE platform = ?`;
+    const sql = `UPDATE constraint_profiles SET ${updates.join(', ')} WHERE platform = ? OR platform = ?`;
     const stmt = this.db.prepare(sql);
     stmt.run(...params);
 

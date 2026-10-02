@@ -1,16 +1,22 @@
-import { PLATFORMS } from '../config/constants.js';
 import { TelegramPublisher } from './telegramPublisher.js';
 import { MockXPublisher } from './mockXPublisher.js';
 import { MockLinkedInPublisher } from './mockLinkedInPublisher.js';
+import { normalizePlatform } from '../config/constants.js';
 
 export class PublisherRegistry {
   constructor(options = {}) {
     this.publishers = new Map();
 
-    // Register default publisher adapters
-    this.register(PLATFORMS.TELEGRAM, new TelegramPublisher(options.telegram || {}));
-    this.register(PLATFORMS.X, new MockXPublisher(options.x || {}));
-    this.register(PLATFORMS.LINKEDIN, new MockLinkedInPublisher(options.linkedin || {}));
+    const telegramPub = new TelegramPublisher(options.telegram || {});
+    const mockXPub = new MockXPublisher(options.x || {});
+    const mockLinkedInPub = new MockLinkedInPublisher(options.linkedin || {});
+
+    // Register primary names and aliases
+    this.register('telegram', telegramPub);
+    this.register('mock_x', mockXPub);
+    this.register('x', mockXPub);
+    this.register('mock_linkedin', mockLinkedInPub);
+    this.register('linkedin', mockLinkedInPub);
   }
 
   register(platform, publisherInstance) {
@@ -18,18 +24,21 @@ export class PublisherRegistry {
   }
 
   get(platform) {
-    const pub = this.publishers.get(platform.toLowerCase());
-    if (!pub) {
-      throw new Error(`No publisher adapter registered for platform: ${platform}`);
-    }
-    return pub;
+    const direct = this.publishers.get(platform.toLowerCase());
+    if (direct) return direct;
+
+    const normalized = normalizePlatform(platform);
+    const normalizedPub = this.publishers.get(normalized);
+    if (normalizedPub) return normalizedPub;
+
+    throw new Error(`No publisher adapter registered for platform: ${platform}`);
   }
 
   has(platform) {
-    return this.publishers.has(platform.toLowerCase());
+    return this.publishers.has(platform.toLowerCase()) || this.publishers.has(normalizePlatform(platform));
   }
 
   listPlatforms() {
-    return Array.from(this.publishers.keys());
+    return ['telegram', 'mock_x', 'mock_linkedin'];
   }
 }
