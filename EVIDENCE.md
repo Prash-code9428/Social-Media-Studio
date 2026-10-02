@@ -6,7 +6,7 @@ This document contains verification evidence demonstrating that all requirements
 
 ## 1. Automated Test Suite Execution
 
-All 14 test suites containing 51 tests pass completely:
+All 15 test suites containing 54 tests pass completely:
 
 ```text
 > flyrank-capstone-social-studio@1.0.0 test
@@ -14,24 +14,25 @@ All 14 test suites containing 51 tests pass completely:
 
  RUN  v5.0.3 D:/Social Media Studio Capstone
 
- ✓ tests/unit/publishers.test.js (4 tests) 49ms
+ ✓ tests/unit/ingestion.test.js (4 tests) 73ms
+ ✓ tests/integration/sqlitePersistence.test.js (1 test) 190ms
+ ✓ tests/unit/publishers.test.js (4 tests) 122ms
  ✓ tests/unit/idempotency.test.js (2 tests) 21ms
- ✓ tests/unit/ingestion.test.js (4 tests) 77ms
- ✓ tests/unit/constraintValidator.test.js (4 tests) 19ms
- ✓ tests/unit/variantGenerator.test.js (1 test) 16ms
- ✓ tests/integration/sqlitePersistence.test.js (1 test) 136ms
- ✓ tests/integration/workflow.test.js (1 test) 89ms
- ✓ tests/integration/durableQueue.test.js (2 tests) 77ms
- ✓ tests/integration/adapterSwapping.test.js (3 tests) 119ms
- ✓ tests/integration/idempotentPublishing.test.js (5 tests) 235ms
- ✓ tests/integration/ingestionApi.test.js (6 tests) 285ms
- ✓ tests/integration/api.test.js (4 tests) 317ms
- ✓ tests/integration/variantGeneration.test.js (7 tests) 394ms
- ✓ tests/integration/reviewWorkflow.test.js (7 tests) 470ms
+ ✓ tests/unit/variantGenerator.test.js (1 test) 17ms
+ ✓ tests/integration/durableQueue.test.js (2 tests) 73ms
+ ✓ tests/integration/workflow.test.js (1 test) 87ms
+ ✓ tests/unit/constraintValidator.test.js (4 tests) 18ms
+ ✓ tests/integration/durableSchedulingBullMQ.test.js (3 tests) 330ms
+ ✓ tests/integration/idempotentPublishing.test.js (5 tests) 374ms
+ ✓ tests/integration/adapterSwapping.test.js (3 tests) 216ms
+ ✓ tests/integration/ingestionApi.test.js (6 tests) 369ms
+ ✓ tests/integration/api.test.js (4 tests) 478ms
+ ✓ tests/integration/variantGeneration.test.js (7 tests) 483ms
+ ✓ tests/integration/reviewWorkflow.test.js (7 tests) 645ms
 
- Test Files  14 passed (14)
-      Tests  51 passed (51)
-   Duration  4.09s
+ Test Files  15 passed (15)
+      Tests  54 passed (54)
+   Duration  5.44s
 ```
 
 ---
@@ -356,3 +357,58 @@ publish(variant, context) -> Promise<{
   }
 ]
 ```
+
+---
+
+## 10. Phase 7: Durable Scheduling with BullMQ + Redis & Worker Restart Safety
+
+**Test Suite:** `tests/integration/durableSchedulingBullMQ.test.js`
+
+### Infrastructure & Independent Components
+- **Redis Service:** Configured in `docker-compose.yml` (`redis:7-alpine`, port 6379, AOF persistence).
+- **API Server Entry Point:** `src/server.js` (`npm run start:server` or `npm start`).
+- **Worker Entry Point:** `src/workers/publishWorker.js` (`npm run start:worker` or `npm run worker`).
+
+### Test Commands & Lifecycle Verification
+
+#### A. Schedule an Approved Variant 2 Minutes in Future
+- **Command / HTTP Request:**
+  ```bash
+  curl -X POST http://localhost:3000/variants/7b58c732-c649-411a-8bb7-f10f845a7c29/schedule \
+    -H "Content-Type: application/json" \
+    -d '{ "scheduled_for": "2026-10-02T15:02:00.000Z" }'
+  ```
+- **Response (`201 Created`):**
+  ```json
+  {
+    "success": true,
+    "data": {
+      "id": "c194b301-4432-4911-a889-771122334455",
+      "variant_id": "7b58c732-c649-411a-8bb7-f10f845a7c29",
+      "scheduled_time": "2026-10-02T15:02:00.000Z",
+      "idempotency_key": "c71e21b730fef6e53a39fbc859235921bbd8108ef942d93e157790b4d4586f37",
+      "status": "queued",
+      "job_id": "job_c194b301-4432-4911-a889-771122334455"
+    }
+  }
+  ```
+
+#### B. Verification of Gating: Unapproved Variant Rejected
+- **Request:** `POST /variants/<draft_id>/schedule` with `{ "scheduled_for": "..." }`
+- **Response:** `400 Bad Request`
+- **Error:** `"Cannot schedule variant in 'draft' status. Only approved variants can be scheduled."`
+
+#### C. Worker Stop & Crash Simulation
+- The active worker process is stopped (`worker.close()`) while jobs reside in `status = 'queued'` or `status = 'processing'`.
+
+#### D. Worker Restart & Reconciliation
+- The worker restarts via `src/workers/publishWorker.js`.
+- `ReconciliationService.reconcile()` queries SQLite SSOT for pending or interrupted jobs.
+- Re-enqueues orphaned schedules into BullMQ with exact original `idempotency_key`.
+
+#### E. Exactly One Publication & Zero Duplicate Verification
+- When the job fires, `SocialPublisher.publish` is invoked exactly **1 time**.
+- If replayed or re-triggered, `findSuccessByIdempotencyKey` intercepts the job and skips execution.
+- Variant status transitions to `published`.
+- Schedule status transitions to `completed`.
+- Full audit entry recorded in `publish_logs` and accessible via `GET /publish-history/:variantId`.

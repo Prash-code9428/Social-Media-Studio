@@ -13,9 +13,16 @@ const rejectVariantSchema = z.object({
   reason: z.string().min(1, 'Rejection reason is required'),
 });
 
-const scheduleVariantSchema = z.object({
-  scheduled_time: z.string().datetime({ message: 'scheduled_time must be an ISO 8601 datetime string' }),
-});
+const scheduleVariantSchema = z
+  .object({
+    scheduled_for: z.string().datetime({ message: 'scheduled_for must be an ISO 8601 datetime string' }).optional(),
+    scheduled_time: z.string().datetime({ message: 'scheduled_time must be an ISO 8601 datetime string' }).optional(),
+    scheduledTime: z.string().datetime({ message: 'scheduledTime must be an ISO 8601 datetime string' }).optional(),
+  })
+  .refine(
+    (data) => Boolean(data.scheduled_for || data.scheduled_time || data.scheduledTime),
+    { message: 'scheduled_for or scheduled_time is required' }
+  );
 
 const listVariantsQuerySchema = z.object({
   postId: z.string().optional(),
@@ -90,7 +97,8 @@ export function createVariantsRouter(service) {
   // Schedule Variant: POST /variants/:id/schedule
   router.post('/:id/schedule', validateBody(scheduleVariantSchema), async (req, res, next) => {
     try {
-      const schedule = await service.scheduleVariant(req.params.id, req.validatedBody.scheduled_time);
+      const scheduledTime = req.validatedBody.scheduled_for || req.validatedBody.scheduled_time || req.validatedBody.scheduledTime;
+      const schedule = await service.scheduleVariant(req.params.id, scheduledTime);
       res.status(201).json({ success: true, data: schedule });
     } catch (err) {
       next(err);
