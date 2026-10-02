@@ -1,0 +1,25 @@
+# Dependencies
+node_modules/
+
+# Environment files
+.env
+.env.local
+
+# Database
+data/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+test.sqlite*
+
+# Logs & Coverage
+logs/
+*.log
+npm-debug.log*
+coverage/
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

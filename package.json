@@ -1,0 +1,41 @@
+{
+  "name": "flyrank-capstone-social-studio",
+  "version": "1.0.0",
+  "description": "Social Media Studio Capstone — Content Ingestion, Variant Generation, Constraint Validation, Review Workflow, and Durable Scheduling.",
+  "main": "src/server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.js",
+    "worker": "node src/worker.js",
+    "dev": "node --watch src/server.js",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "keywords": [
+    "social-media",
+    "publisher",
+    "bullmq",
+    "sqlite",
+    "express",
+    "telegram"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "better-sqlite3": "^13.0.3",
+    "bullmq": "^6.3.11",
+    "cheerio": "^1.2.0",
+    "cors": "^2.8.6",
+    "dotenv": "^18.0.5",
+    "express": "^5.2.1",
+    "ioredis": "^5.11.1",
+    "morgan": "^1.12.1",
+    "uuid": "^14.0.2",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "ioredis-mock": "^8.13.1",
+    "supertest": "^7.3.0",
+    "vitest": "^5.0.3"
+  }
+}
