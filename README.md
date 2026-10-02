@@ -1,6 +1,6 @@
 # Social Media Studio — FlyRank Backend Capstone
 
-[![Test Suite](https://img.shields.io/badge/Tests-22%20passed-brightgreen.svg)](#running-tests)
+[![Test Suite](https://img.shields.io/badge/Tests-29%20passed-brightgreen.svg)](#running-tests)
 [![Node.js](https://img.shields.io/badge/Node.js-v20%2B-blue.svg)](https://nodejs.org)
 [![Database](https://img.shields.io/badge/SQLite-better--sqlite3-blue.svg)](https://github.com/WiseLibs/better-sqlite3)
 [![Queue](https://img.shields.io/badge/Queue-BullMQ%20%2B%20Redis-red.svg)](https://bullmq.io)
@@ -45,29 +45,30 @@ The service follows a modular Hexagonal / Layered Architecture:
 
 ## ✨ Core Features
 
-1. **Multi-Source Ingestion**:
+1. **Multi-Source Ingestion & SSOT**:
+   - `POST /posts` accepting **either** Markdown or URL (strictly mutually exclusive).
    - Ingest from pasted **Markdown** (extracts headers, structured paragraphs, word count, reading time).
    - Ingest from live **URL** (extracts semantic HTML using Cheerio, canonical tags, and OpenGraph metadata).
-2. **Single Source of Truth (SSOT)**:
-   - Stored in SQLite with Write-Ahead Logging (`WAL`) mode enabled.
-3. **Platform-Specific Variants**:
+   - Stored in SQLite with Write-Ahead Logging (`WAL`) mode as the **ONLY** source of truth.
+   - Variant generation reads strictly from stored SQLite records and never directly fetches external URLs.
+2. **Platform-Specific Variants**:
    - Deterministic rule engine tailored for **Telegram**, **X (Twitter)**, and **LinkedIn**.
-4. **Constraint Profile Engine**:
+3. **Constraint Profile Engine**:
    - Enforces character length limits, allowed tones, and hashtag boundaries per platform.
-5. **Review Workflow & Moderation Gating**:
+4. **Review Workflow & Moderation Gating**:
    - State machine: `draft` $\to$ `approved` / `rejected` $\to$ `published`.
    - Strict gating: only valid variants can be approved; only approved variants can be scheduled or published.
-6. **Polymorphic SocialPublisher Interface**:
+5. **Polymorphic SocialPublisher Interface**:
    - `TelegramPublisher`: **Real** publishing target using Telegram Bot API.
    - `MockXPublisher`: Simulates tweet publishing with realistic latency and mock tweet IDs.
    - `MockLinkedInPublisher`: Simulates LinkedIn Share URNs and network responses.
-7. **Idempotent Publishing**:
+6. **Idempotent Publishing**:
    - Deterministic slot key: `SHA-256(variant_id + ISO_ROUNDED_SLOT)`.
    - Multi-layer protection: database unique constraint + worker atomic locks + pre-dispatch log check.
-8. **Durable Scheduling & Crash Recovery**:
+7. **Durable Scheduling & Crash Recovery**:
    - BullMQ delayed queue backed by Redis with dual-mode support (in-memory mock or real Redis).
    - Boot-time `ReconciliationService` automatically recovers orphaned queued jobs on worker restart.
-9. **Full Audit History**:
+8. **Full Audit History**:
    - Detailed `publish_logs` storing external post IDs, payloads, response times, and failure diagnostics.
 
 ---
@@ -117,7 +118,7 @@ npm run worker
 
 ## 🧪 Running Tests
 
-The test suite includes 8 test suites covering unit and integration testing across all layers:
+The test suite includes 10 test suites covering unit and integration testing across all layers:
 
 ```bash
 npm test
@@ -125,6 +126,8 @@ npm test
 
 Test coverage includes:
 - Markdown and HTML/URL ingestion parsers
+- Unified `POST /posts` validation (Markdown, URL, mutual exclusion, malformed URL, missing body)
+- Single Source of Truth persistence in SQLite
 - Platform constraint profiles and boundary checks
 - Deterministic variant generator
 - Social publisher adapters (Telegram, X, LinkedIn)
@@ -138,57 +141,109 @@ Test coverage includes:
 ## 📖 REST API Reference
 
 ### Health Check
-- `GET /api/health` — Check database status and registered publisher adapters.
+- `GET /api/health` or `GET /health` — Check database status and registered publisher adapters.
 
-### 1. Content Ingestion (`/api/posts`)
-- `POST /api/posts/ingest/markdown`
+### 1. Content Ingestion & Storage (`/posts`)
+
+#### Ingest Post (`POST /posts` or `POST /api/posts`)
+Accepts **either** `markdown` or `url` (exactly one is required).
+
+- **Markdown Ingestion Request:**
   ```json
   {
-    "title": "Scaling Distributed Systems",
-    "markdown": "# Scaling Distributed Systems\n\nA guide on message queues and horizontal scale.",
-    "metadata": { "author": "Alice" }
+    "markdown": "# Scaling Distributed Systems\n\nA guide on message queues and horizontal scale."
   }
   ```
-- `POST /api/posts/ingest/url`
+- **URL Ingestion Request:**
   ```json
   {
     "url": "https://example.com/blog/microservices"
   }
   ```
-- `GET /api/posts` — List ingested posts (`?limit=20&offset=0`).
-- `GET /api/posts/:id` — Get full post details and child variants.
+- **Response (201 Created):**
+  ```json
+  {
+    "success": true,
+    "data": {
+      "id": "7b8f9e01-2345-6789-abcd-ef0123456789",
+      "title": "Scaling Distributed Systems",
+      "source_type": "markdown",
+      "source_url": null,
+      "content": "A guide on message queues and horizontal scale.",
+      "summary": "A guide on message queues and horizontal scale.",
+      "metadata": {
+        "wordCount": 9,
+        "readingTimeMinutes": 1,
+        "sourceType": "markdown"
+      },
+      "created_at": "2026-10-02 12:15:00",
+      "updated_at": "2026-10-02 12:15:00"
+    }
+  }
+  ```
 
-### 2. Variants & Generation (`/api/posts` & `/api/variants`)
-- `POST /api/posts/:id/generate-variants`
+- **Validation Errors (400 Bad Request):**
+  - If neither `markdown` nor `url` is provided $\to$ returns `Validation failed: Exactly one input source is required`.
+  - If both `markdown` and `url` are provided $\to$ returns `Validation failed: Cannot provide both "markdown" and "url"`.
+  - If `url` is malformed $\to$ returns `Validation failed: Invalid URL format`.
+
+#### List Ingested Posts (`GET /posts` or `GET /api/posts`)
+- **Query Parameters:** `?limit=20&offset=0`
+- **Response (200 OK):**
+  ```json
+  {
+    "success": true,
+    "data": [
+      {
+        "id": "7b8f9e01-2345-6789-abcd-ef0123456789",
+        "title": "Scaling Distributed Systems",
+        "source_type": "markdown",
+        "source_url": null,
+        "content": "A guide on message queues...",
+        "created_at": "2026-10-02 12:15:00",
+        "updated_at": "2026-10-02 12:15:00"
+      }
+    ]
+  }
+  ```
+
+#### Get Single Post by ID (`GET /posts/:id` or `GET /api/posts/:id`)
+- **Response (200 OK):** Returns full post record including child variants.
+- **Response (404 Not Found):** Returns `{ "success": false, "error": { "message": "Post not found with ID: ...", "code": "NOT_FOUND" } }`.
+
+---
+
+### 2. Variants & Generation (`/posts` & `/variants`)
+- `POST /posts/:id/generate-variants`
   ```json
   {
     "platforms": ["telegram", "x", "linkedin"],
     "tone": "informative"
   }
   ```
-- `POST /api/posts/:id/variants` — Create custom variant.
-- `PATCH /api/variants/:id` — Edit variant content (resets status to `draft` and re-validates).
+- `POST /posts/:id/variants` — Create custom variant.
+- `PATCH /variants/:id` — Edit variant content (resets status to `draft` and re-validates).
 
-### 3. Review Workflow (`/api/variants/:id`)
-- `POST /api/variants/:id/approve` — Approve variant (requires `valid` validation status).
-- `POST /api/variants/:id/reject`
+### 3. Review Workflow (`/variants/:id`)
+- `POST /variants/:id/approve` — Approve variant (requires `valid` validation status).
+- `POST /variants/:id/reject`
   ```json
   { "reason": "Exceeds desired length for promotional campaign" }
   ```
 
 ### 4. Scheduling & Publishing
-- `POST /api/variants/:id/schedule`
+- `POST /variants/:id/schedule`
   ```json
   { "scheduled_time": "2026-10-02T15:00:00Z" }
   ```
-- `POST /api/variants/:id/publish-now` — Immediately publish approved variant.
-- `GET /api/schedules` — List scheduled slots (`?status=queued|processing|completed|failed`).
-- `DELETE /api/schedules/:id` — Cancel pending scheduled job.
-- `GET /api/publish-logs` — Query complete publication audit log.
+- `POST /variants/:id/publish-now` — Immediately publish approved variant.
+- `GET /schedules` — List scheduled slots (`?status=queued|processing|completed|failed`).
+- `DELETE /schedules/:id` — Cancel pending scheduled job.
+- `GET /publish-logs` — Query complete publication audit log.
 
-### 5. Constraint Profiles (`/api/profiles`)
-- `GET /api/profiles` — List constraint profiles.
-- `PUT /api/profiles/:platform` — Update constraint profile limits.
+### 5. Constraint Profiles (`/profiles`)
+- `GET /profiles` — List constraint profiles.
+- `PUT /profiles/:platform` — Update constraint profile limits.
 
 ---
 
@@ -199,6 +254,7 @@ flyrank-capstone-social-studio/
 ├── .env.example
 ├── .gitignore
 ├── package.json
+├── DESIGN.md
 ├── README.md
 ├── EVIDENCE.md
 ├── BUILDLOG.md
@@ -258,6 +314,8 @@ flyrank-capstone-social-studio/
     │   ├── publishers.test.js
     │   └── idempotency.test.js
     └── integration/
+        ├── ingestionApi.test.js   # Phase 2 Ingestion endpoint tests
+        ├── sqlitePersistence.test.js # SQLite disk SSOT tests
         ├── api.test.js
         ├── workflow.test.js
         └── durableQueue.test.js

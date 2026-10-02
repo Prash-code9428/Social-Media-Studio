@@ -24,8 +24,16 @@ export class PostsRepository {
     if (!row) return null;
 
     return {
-      ...row,
+      id: row.id,
+      title: row.title,
+      source_type: row.source_type,
+      source_url: row.source_url,
+      content: row.raw_content,
+      raw_content: row.raw_content,
+      summary: row.summary,
       metadata: JSON.parse(row.metadata_json || '{}'),
+      created_at: row.created_at,
+      updated_at: row.updated_at,
     };
   }
 
@@ -35,8 +43,16 @@ export class PostsRepository {
     `);
     const rows = stmt.all(limit, offset);
     return rows.map((row) => ({
-      ...row,
+      id: row.id,
+      title: row.title,
+      source_type: row.source_type,
+      source_url: row.source_url,
+      content: row.raw_content,
+      raw_content: row.raw_content,
+      summary: row.summary,
       metadata: JSON.parse(row.metadata_json || '{}'),
+      created_at: row.created_at,
+      updated_at: row.updated_at,
     }));
   }
 

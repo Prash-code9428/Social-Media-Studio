@@ -20,13 +20,31 @@ export function createApp({ service, dbCtx, publishQueue, publisherRegistry }) {
     app.use(morgan('dev'));
   }
 
-  // Mount API Routers
-  app.use('/api', createHealthRouter({ dbCtx, publishQueue, publisherRegistry }));
-  app.use('/api/posts', createPostsRouter(service));
-  app.use('/api/variants', createVariantsRouter(service));
-  app.use('/api/profiles', createProfilesRouter(service));
-  app.use('/api/schedules', createSchedulesRouter(service));
-  app.use('/api', createPublishRoutes(service));
+  const postsRouter = createPostsRouter(service);
+  const variantsRouter = createVariantsRouter(service);
+  const profilesRouter = createProfilesRouter(service);
+  const schedulesRouter = createSchedulesRouter(service);
+  const publishRouter = createPublishRoutes(service);
+  const healthRouter = createHealthRouter({ dbCtx, publishQueue, publisherRegistry });
+
+  // Mount on both root paths and /api/* prefixes
+  app.use('/', healthRouter);
+  app.use('/api', healthRouter);
+
+  app.use('/posts', postsRouter);
+  app.use('/api/posts', postsRouter);
+
+  app.use('/variants', variantsRouter);
+  app.use('/api/variants', variantsRouter);
+
+  app.use('/profiles', profilesRouter);
+  app.use('/api/profiles', profilesRouter);
+
+  app.use('/schedules', schedulesRouter);
+  app.use('/api/schedules', schedulesRouter);
+
+  app.use('/', publishRouter);
+  app.use('/api', publishRouter);
 
   // Centralized Error Handling Middleware
   app.use(errorHandler);
