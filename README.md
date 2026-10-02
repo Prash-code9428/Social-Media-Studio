@@ -1,322 +1,383 @@
 # Social Media Studio — FlyRank Backend Capstone
 
-[![Test Suite](https://img.shields.io/badge/Tests-29%20passed-brightgreen.svg)](#running-tests)
+[![Test Suite](https://img.shields.io/badge/Tests-57%20passed-brightgreen.svg)](#-running-tests)
 [![Node.js](https://img.shields.io/badge/Node.js-v20%2B-blue.svg)](https://nodejs.org)
 [![Database](https://img.shields.io/badge/SQLite-better--sqlite3-blue.svg)](https://github.com/WiseLibs/better-sqlite3)
 [![Queue](https://img.shields.io/badge/Queue-BullMQ%20%2B%20Redis-red.svg)](https://bullmq.io)
-
-**Social Media Studio** is an enterprise-grade backend service that automates blog post ingestion, platform-specific variant adaptation, constraint validation, human-in-the-loop review workflow, and durable scheduled publishing across social channels.
+[![Container](https://img.shields.io/badge/Docker-Redis%207-blue.svg)](https://www.docker.com)
 
 ---
 
-## 🏛️ System Architecture
+## 1. Project Overview
 
-The service follows a modular Hexagonal / Layered Architecture:
+**Social Media Studio** is an enterprise-grade backend service built in Node.js (ES Modules) that automates the lifecycle of transforming long-form blog articles into platform-optimized social media posts. The system ingests raw blog content, deterministically synthesizes platform-constrained variants, enforces human-in-the-loop editorial review, schedules durable publishing slots via BullMQ and Redis, and idempotently publishes to live Telegram channels and simulated social networks (MockX and MockLinkedIn) with SQLite as the Single Source of Truth (SSOT).
 
+---
+
+## 2. Problem Being Solved
+
+Content marketing teams face significant operational friction and reliability risks when syndicating long-form content across diverse social networks:
+- **Platform Incompatibilities:** Every social channel has rigid character limits, distinct hashtag expectations, and formatting quirks (e.g. Telegram HTML vs. Twitter's strict 280-character limit vs. LinkedIn's thought-leadership tone).
+- **Review Gating:** Automated AI or template systems risk publishing hallucinated or unapproved content if human editorial review is bypassed.
+- **Double-Publishing Disasters:** Network retries, concurrent distributed workers, or process restarts frequently trigger catastrophic duplicate publications.
+- **Unreliable Queuing:** In-memory queue runners lose scheduled publications when worker instances restart or crash.
+
+Social Media Studio solves this by pairing strict validation gates with database-enforced idempotency ($\text{SHA-256}(\text{variant\_id} + \text{slot})$) and boot-time reconciliation for durable queue workers.
+
+---
+
+## 3. Architecture Diagram
+
+```mermaid
+flowchart TD
+    subgraph INGESTION ["1. Ingestion Layer (SSOT)"]
+        A1[Raw Markdown File/Text] --> B[POST /posts]
+        A2[Live Web URL] -->|Cheerio Extraction| B
+        B -->|Write-Ahead Logging| C[(SQLite: posts)]
+    end
+
+    subgraph GENERATION ["2. Variant & Constraint Engine"]
+        C -->|Read Post| D[POST /posts/:id/generate]
+        P[(constraint_profiles)] --> D
+        D --> E1[Telegram Variant]
+        D --> E2[MockX Variant]
+        D --> E3[MockLinkedIn Variant]
+        E1 & E2 & E3 -->|Validate Constraints| F[(SQLite: post_variants status: draft)]
+    end
+
+    subgraph REVIEW ["3. Human-in-the-Loop Review"]
+        F --> G1[POST /variants/:id/approve] --> H1[(status: approved)]
+        F --> G2[POST /variants/:id/reject] --> H2[(status: rejected)]
+        F --> G3[PATCH /variants/:id] -->|Resets to draft| F
+    end
+
+    subgraph SCHEDULING ["4. Durable Scheduling & Idempotency"]
+        H1 --> I[POST /variants/:id/schedule]
+        I -->|SHA-256 Hash| J[(SQLite: schedules UNIQUE idempotency_key)]
+        J -->|Delayed Task| K[(BullMQ Queue / Redis 7)]
+    end
+
+    subgraph WORKER ["5. Publish Worker & Adapters"]
+        K --> L[PublishWorker]
+        L -->|Atomic Claim Lock| J
+        L -->|Pre-flight Check| M[(publish_logs)]
+        L --> N{SocialPublisher Registry}
+        N -->|Real HTTPS| O1[Telegram Bot API]
+        N -->|Database Mock| O2[MockX Adapter]
+        N -->|Database Mock| O3[MockLinkedIn Adapter]
+        O1 & O2 & O3 -->|Record Result| M
+        M -->|Mark Completed| J
+        M -->|Mark Published| F
+    end
 ```
-                  ┌──────────────────────────────────────────────┐
-                  │              REST API (Express)              │
-                  │   - Zod Request Validation & Error Handling │
-                  └──────────────────────┬───────────────────────┘
-                                         │
-                  ┌──────────────────────▼───────────────────────┐
-                  │               Core Services                  │
-                  │  - IngestionService (URL & Markdown)         │
-                  │  - VariantEngine (Deterministic Templates)   │
-                  │  - ConstraintValidator (Platform Rules)      │
-                  │  - SocialStudioService (Review Workflow)     │
-                  │  - ReconciliationService (Durable Recovery)  │
-                  └──────────────┬────────────────────────┬──────┘
-                                 │                        │
-         ┌───────────────────────▼────────┐     ┌─────────▼────────────────────────┐
-         │       Data Access Layer        │     │         Durable Worker           │
-         │  (SQLite via better-sqlite3)   │     │    (BullMQ + Redis Task Runner)  │
-         │  - Posts, Variants, Profiles,  │     └─────────────────┬────────────────┘
-         │    Schedules, Publish Logs     │                       │
-         └────────────────────────────────┘             ┌─────────▼────────────────┐
-                                                        │ SocialPublisher Adapters │
-                                                        │  ├─ TelegramPublisher   │
-                                                        │  ├─ MockXPublisher       │
-                                                        │  └─ MockLinkedInPublisher│
-                                                        └──────────────────────────┘
-```
 
 ---
 
-## ✨ Core Features
+## 4. Technology Stack
 
-1. **Multi-Source Ingestion & SSOT**:
-   - `POST /posts` accepting **either** Markdown or URL (strictly mutually exclusive).
-   - Ingest from pasted **Markdown** (extracts headers, structured paragraphs, word count, reading time).
-   - Ingest from live **URL** (extracts semantic HTML using Cheerio, canonical tags, and OpenGraph metadata).
-   - Stored in SQLite with Write-Ahead Logging (`WAL`) mode as the **ONLY** source of truth.
-   - Variant generation reads strictly from stored SQLite records and never directly fetches external URLs.
-2. **Platform-Specific Variants**:
-   - Deterministic rule engine tailored for **Telegram**, **X (Twitter)**, and **LinkedIn**.
-3. **Constraint Profile Engine**:
-   - Enforces character length limits, allowed tones, and hashtag boundaries per platform.
-4. **Review Workflow & Moderation Gating**:
-   - State machine: `draft` $\to$ `approved` / `rejected` $\to$ `published`.
-   - Strict gating: only valid variants can be approved; only approved variants can be scheduled or published.
-5. **Polymorphic SocialPublisher Interface**:
-   - `TelegramPublisher`: **Real** publishing target using Telegram Bot API.
-   - `MockXPublisher`: Simulates tweet publishing with realistic latency and mock tweet IDs.
-   - `MockLinkedInPublisher`: Simulates LinkedIn Share URNs and network responses.
-6. **Idempotent Publishing**:
-   - Deterministic slot key: `SHA-256(variant_id + ISO_ROUNDED_SLOT)`.
-   - Multi-layer protection: database unique constraint + worker atomic locks + pre-dispatch log check.
-7. **Durable Scheduling & Crash Recovery**:
-   - BullMQ delayed queue backed by Redis with dual-mode support (in-memory mock or real Redis).
-   - Boot-time `ReconciliationService` automatically recovers orphaned queued jobs on worker restart.
-8. **Full Audit History**:
-   - Detailed `publish_logs` storing external post IDs, payloads, response times, and failure diagnostics.
+- **Runtime & Language:** Node.js (v20+ LTS / v24+), ES Modules (`"type": "module"`).
+- **Web Framework:** Express 5 (`express`).
+- **Database Engine:** SQLite 3 via `better-sqlite3` with Write-Ahead Logging (`WAL`) mode enabled.
+- **Durable Queue & Scheduler:** BullMQ (`bullmq`) backed by Redis (`ioredis` / Redis 7).
+- **Containerization:** Docker & Docker Compose (`redis:7-alpine`).
+- **HTML Extraction:** Cheerio (`cheerio`) for semantic web scraping and OpenGraph metadata parsing.
+- **Schema & Input Validation:** Zod (`zod`).
+- **Testing & Mocking:** Vitest (`vitest`), Supertest (`supertest`), and `ioredis-mock`.
 
 ---
 
-## 🚀 Quick Start
+## 5. Setup Requirements
 
-### 1. Prerequisites
-- Node.js v20+ or v24+
-- (Optional) Redis server (if running with external Redis; default uses zero-config in-memory Redis mode)
+- **Node.js**: `v20.0.0` or higher installed (`node -v`).
+- **Docker & Docker Compose**: Installed and running (for live Redis queue persistence).
+- **Telegram Account (Optional for Real Testing)**: A Telegram Bot Token from `@BotFather` and a channel/chat ID where the bot has administrator/post permissions.
 
-### 2. Install Dependencies
+---
+
+## 6. Docker Setup
+
+To run the Redis durable queue instance via Docker Compose:
+
 ```bash
-npm install
+# Start Redis container in detached mode
+docker-compose up -d
+
+# Verify Redis container health
+docker-compose ps
 ```
 
-### 3. Environment Configuration
-Copy `.env.example` to `.env`:
+To shut down the Redis container:
+```bash
+docker-compose down
+```
+
+---
+
+## 7. Environment Variables
+
+Create your local `.env` file from the provided `.env.example`:
+
 ```bash
 cp .env.example .env
 ```
 
-Key environment variables:
-```env
-PORT=3000
-NODE_ENV=development
-DATABASE_PATH=./data/social_studio.sqlite
-USE_IN_MEMORY_REDIS=true
+| Variable | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `PORT` | Number | `3000` | Port for the Express API server. |
+| `NODE_ENV` | String | `development` | Environment mode (`development`, `test`, `production`). |
+| `DATABASE_PATH` | String | `./data/social_studio.sqlite` | SQLite database file location (`:memory:` supported). |
+| `REDIS_HOST` | String | `127.0.0.1` | Redis host for BullMQ durable queuing. |
+| `REDIS_PORT` | Number | `6379` | Redis port for BullMQ. |
+| `REDIS_URL` | String | *(Optional)* | Full Redis connection URI (e.g. `redis://127.0.0.1:6379`). |
+| `USE_IN_MEMORY_REDIS` | Boolean | `false` | Fallback in-memory queue mode when running without Redis. |
+| `TELEGRAM_BOT_TOKEN` | String | `""` | Telegram Bot Token from `@BotFather` (never committed). |
+| `TELEGRAM_CHAT_ID` | String | `""` | Telegram channel username (`@channel`) or chat ID (`-100...`). |
+| `MOCK_X_FAILURE_RATE` | Number | `0` | Probability (0.0 - 1.0) of simulated Twitter/X failures. |
+| `MOCK_LINKEDIN_FAILURE_RATE`| Number | `0` | Probability (0.0 - 1.0) of simulated LinkedIn failures. |
 
-# Real Telegram Publisher (Optional - provide to dispatch to real channel)
-TELEGRAM_BOT_TOKEN=123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11
-TELEGRAM_CHAT_ID=-1001234567890
-```
+---
 
-### 4. Run Server & Worker
+## 8. Seed / Sample Data Instructions
+
+The SQLite database is initialized automatically upon first startup. The schema migrations run at boot and seed standard platform constraint profiles into the `constraint_profiles` table.
+
+To test the system immediately with realistic sample content, use the included verification endpoints or run the ingestion route with a sample markdown article:
+
 ```bash
-# Start API Server (includes embedded worker & reconciliation)
-npm start
-
-# Or start in development mode with auto-reload
-npm run dev
-
-# Or start standalone worker
-npm run worker
+curl -X POST http://localhost:3000/posts \
+  -H "Content-Type: application/json" \
+  -d '{
+    "markdown": "# Scaling Distributed Systems with Message Queues\n\nDistributed message queues enable decoupled background processing, smoothing out peak traffic loads and ensuring resilient task execution across microservices."
+  }'
 ```
 
 ---
 
-## 🧪 Running Tests
+## 9. One-Command Run Instructions
 
-The test suite includes 10 test suites covering unit and integration testing across all layers:
+### Option A: Standard Full-Stack Run (Docker Redis + API + Worker)
+
+```bash
+# 1. Start Redis in background
+docker-compose up -d
+
+# 2. Start API Server (Terminal 1)
+npm run start:server
+
+# 3. Start Publish Worker (Terminal 2)
+npm run start:worker
+```
+
+### Option B: Zero-Config Standalone Dev Mode (Embedded In-Memory Queue)
+
+```bash
+# Run server with in-memory queue fallback enabled (no Docker required)
+npm run dev
+```
+
+### Option C: Execute All 17 Automated Verification Suites
 
 ```bash
 npm test
 ```
 
-Test coverage includes:
-- Markdown and HTML/URL ingestion parsers
-- Unified `POST /posts` validation (Markdown, URL, mutual exclusion, malformed URL, missing body)
-- Single Source of Truth persistence in SQLite
-- Platform constraint profiles and boundary checks
-- Deterministic variant generator
-- Social publisher adapters (Telegram, X, LinkedIn)
-- SHA-256 slot idempotency hashing
-- Review workflow gating and state transitions
-- Durable queue crash recovery and reconciliation
-- REST API Supertest integration
+---
+
+## 10. API Endpoint Documentation
+
+### Ingestion API
+
+- **`POST /posts`**
+  - **Body (Markdown):** `{ "markdown": "# Title\n\nContent..." }`
+  - **Body (URL):** `{ "url": "https://example.com/article" }`
+  - *Constraint:* Exactly one of `markdown` or `url` is accepted.
+- **`GET /posts`**: List all stored blog posts.
+- **`GET /posts/:id`**: Retrieve post details with all associated variants.
+
+### Variant Generation & Editing
+
+- **`POST /posts/:id/generate`**
+  - Generates platform variants (`telegram`, `mock_x`, `mock_linkedin`) from stored post content.
+- **`GET /variants`**: List all variants (supports `?postId=...&status=...&platform=...`).
+- **`GET /variants/:id`**: Get single variant details.
+- **`PATCH /variants/:id`**
+  - **Body:** `{ "content": "Updated text...", "hashtags": ["#Tech"], "tone": "informative" }`
+  - Edits variant and automatically resets status to `draft` for re-review.
+  - *Constraint:* Published variants cannot be edited (returns 400).
+
+### Review Workflow
+
+- **`POST /variants/:id/approve`**: Approve draft variant (only valid variants can be approved).
+- **`POST /variants/:id/reject`**: Reject variant with `{ "reason": "Editorial feedback..." }`.
+
+### Scheduling & Publishing
+
+- **`POST /variants/:id/schedule`**
+  - **Body:** `{ "scheduled_for": "2026-10-02T15:00:00.000Z" }`
+  - *Constraint:* Only `approved` variants can be scheduled (returns 400 for `draft` or `rejected`).
+- **`POST /variants/:id/publish-now`**: Synchronous immediate publish.
+- **`GET /schedules`**: List all scheduled publish jobs.
+- **`DELETE /schedules/:id`**: Cancel a queued schedule.
+
+### Audit & History
+
+- **`GET /publish-history`**: Complete publishing audit trail with joined variant and slot info.
+- **`GET /publish-history/:variantId`**: Filtered publishing attempts for a specific variant.
+- **`GET /health`**: Healthcheck endpoint exposing database and Redis connection status.
 
 ---
 
-## 📖 REST API Reference
+## 11. Variant Workflow
 
-### Health Check
-- `GET /api/health` or `GET /health` — Check database status and registered publisher adapters.
-
-### 1. Content Ingestion & Storage (`/posts`)
-
-#### Ingest Post (`POST /posts` or `POST /api/posts`)
-Accepts **either** `markdown` or `url` (exactly one is required).
-
-- **Markdown Ingestion Request:**
-  ```json
-  {
-    "markdown": "# Scaling Distributed Systems\n\nA guide on message queues and horizontal scale."
-  }
-  ```
-- **URL Ingestion Request:**
-  ```json
-  {
-    "url": "https://example.com/blog/microservices"
-  }
-  ```
-- **Response (201 Created):**
-  ```json
-  {
-    "success": true,
-    "data": {
-      "id": "7b8f9e01-2345-6789-abcd-ef0123456789",
-      "title": "Scaling Distributed Systems",
-      "source_type": "markdown",
-      "source_url": null,
-      "content": "A guide on message queues and horizontal scale.",
-      "summary": "A guide on message queues and horizontal scale.",
-      "metadata": {
-        "wordCount": 9,
-        "readingTimeMinutes": 1,
-        "sourceType": "markdown"
-      },
-      "created_at": "2026-10-02 12:15:00",
-      "updated_at": "2026-10-02 12:15:00"
-    }
-  }
-  ```
-
-- **Validation Errors (400 Bad Request):**
-  - If neither `markdown` nor `url` is provided $\to$ returns `Validation failed: Exactly one input source is required`.
-  - If both `markdown` and `url` are provided $\to$ returns `Validation failed: Cannot provide both "markdown" and "url"`.
-  - If `url` is malformed $\to$ returns `Validation failed: Invalid URL format`.
-
-#### List Ingested Posts (`GET /posts` or `GET /api/posts`)
-- **Query Parameters:** `?limit=20&offset=0`
-- **Response (200 OK):**
-  ```json
-  {
-    "success": true,
-    "data": [
-      {
-        "id": "7b8f9e01-2345-6789-abcd-ef0123456789",
-        "title": "Scaling Distributed Systems",
-        "source_type": "markdown",
-        "source_url": null,
-        "content": "A guide on message queues...",
-        "created_at": "2026-10-02 12:15:00",
-        "updated_at": "2026-10-02 12:15:00"
-      }
-    ]
-  }
-  ```
-
-#### Get Single Post by ID (`GET /posts/:id` or `GET /api/posts/:id`)
-- **Response (200 OK):** Returns full post record including child variants.
-- **Response (404 Not Found):** Returns `{ "success": false, "error": { "message": "Post not found with ID: ...", "code": "NOT_FOUND" } }`.
+1. **Source Ingestion:** Blog content is stored in the `posts` table as the Single Source of Truth (SSOT).
+2. **Template Synthesis:** `VariantGenerator` reads strictly from SQLite and applies platform templates.
+3. **Draft Assignment:** Stored in `post_variants` with `status = 'draft'` and `validation_status = 'valid' | 'invalid'`.
+4. **Editorial Moderation:** Editor inspects draft. Only approved variants can be scheduled.
 
 ---
 
-### 2. Variants & Generation (`/posts` & `/variants`)
-- `POST /posts/:id/generate-variants`
-  ```json
-  {
-    "platforms": ["telegram", "x", "linkedin"],
-    "tone": "informative"
+## 12. Constraint Profiles
+
+| Platform | Max Chars | Min Hashtags | Max Hashtags | Allowed Tones | Media Allowed |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **Telegram** | 4,096 | 0 | 10 | `professional`, `casual`, `urgent`, `informative`, `engaging` | Yes |
+| **MockX (Twitter)** | 280 | 1 | 4 | `casual`, `urgent`, `witty`, `punchy`, `informative` | Yes |
+| **MockLinkedIn** | 3,000 | 2 | 5 | `professional`, `thought-leadership`, `industry-insight`, `informative` | Yes |
+
+Violations immediately fail validation and are blocked from approval with a descriptive 4xx response:
+```json
+{
+  "success": false,
+  "error": {
+    "message": "Variant exceeds maximum length for mock_x: 302 > 280",
+    "code": "CONSTRAINT_VALIDATION_ERROR"
   }
-  ```
-- `POST /posts/:id/variants` — Create custom variant.
-- `PATCH /variants/:id` — Edit variant content (resets status to `draft` and re-validates).
-
-### 3. Review Workflow (`/variants/:id`)
-- `POST /variants/:id/approve` — Approve variant (requires `valid` validation status).
-- `POST /variants/:id/reject`
-  ```json
-  { "reason": "Exceeds desired length for promotional campaign" }
-  ```
-
-### 4. Scheduling & Publishing
-- `POST /variants/:id/schedule`
-  ```json
-  { "scheduled_time": "2026-10-02T15:00:00Z" }
-  ```
-- `POST /variants/:id/publish-now` — Immediately publish approved variant.
-- `GET /schedules` — List scheduled slots (`?status=queued|processing|completed|failed`).
-- `DELETE /schedules/:id` — Cancel pending scheduled job.
-- `GET /publish-logs` — Query complete publication audit log.
-
-### 5. Constraint Profiles (`/profiles`)
-- `GET /profiles` — List constraint profiles.
-- `PUT /profiles/:platform` — Update constraint profile limits.
-
----
-
-## 📂 Project Structure
-
+}
 ```
-flyrank-capstone-social-studio/
-├── .env.example
-├── .gitignore
-├── package.json
-├── DESIGN.md
-├── README.md
-├── EVIDENCE.md
-├── BUILDLOG.md
-├── src/
-│   ├── config/
-│   │   ├── constants.js          # Default profiles, statuses, platform names
-│   │   └── env.js                # Zod environment variable schema
-│   ├── db/
-│   │   ├── connection.js         # SQLite WAL mode connection
-│   │   ├── schema.js             # DDL and auto-migrations
-│   │   ├── index.js              # Database context & repositories factory
-│   │   ├── postsRepository.js
-│   │   ├── profilesRepository.js
-│   │   ├── variantsRepository.js
-│   │   ├── schedulesRepository.js
-│   │   └── publishLogsRepository.js
-│   ├── ingestion/
-│   │   ├── markdownIngester.js   # Markdown title & paragraph extractor
-│   │   ├── urlIngester.js        # Cheerio HTML scraper
-│   │   └── ingestionService.js
-│   ├── variants/
-│   │   ├── constraintValidator.js # Constraint rules engine
-│   │   └── variantGenerator.js    # Deterministic variant generator
-│   ├── publishers/
-│   │   ├── socialPublisher.js     # Abstract base adapter class
-│   │   ├── telegramPublisher.js   # Real Telegram Bot API target
-│   │   ├── mockXPublisher.js      # Mock Twitter/X publisher
-│   │   ├── mockLinkedInPublisher.js # Mock LinkedIn publisher
-│   │   └── publisherRegistry.js   # Adapter factory registry
-│   ├── queue/
-│   │   ├── idempotency.js         # SHA-256 slot key generator
-│   │   ├── redisClient.js         # Redis & Mock connection factory
-│   │   ├── publishQueue.js        # BullMQ / In-Memory delayed queue
-│   │   ├── publishWorker.js       # Atomic claim & job executor
-│   │   └── reconciliationService.js # Crash recovery coordinator
-│   ├── services/
-│   │   └── socialStudioService.js # High-level domain orchestrator
-│   ├── api/
-│   │   ├── middleware/
-│   │   │   ├── validator.js       # Zod route validator
-│   │   │   └── errorHandler.js    # Central error handler
-│   │   ├── routes/
-│   │   │   ├── postsRoutes.js
-│   │   │   ├── variantsRoutes.js
-│   │   │   ├── profilesRoutes.js
-│   │   │   ├── schedulesRoutes.js
-│   │   │   ├── publishRoutes.js
-│   │   │   └── healthRoutes.js
-│   │   └── app.js                 # Express app setup
-│   ├── server.js                  # Main server entrypoint
-│   └── worker.js                  # Standalone worker entrypoint
-└── tests/
-    ├── unit/
-    │   ├── ingestion.test.js
-    │   ├── constraintValidator.test.js
-    │   ├── variantGenerator.test.js
-    │   ├── publishers.test.js
-    │   └── idempotency.test.js
-    └── integration/
-        ├── ingestionApi.test.js   # Phase 2 Ingestion endpoint tests
-        ├── sqlitePersistence.test.js # SQLite disk SSOT tests
-        ├── api.test.js
-        ├── workflow.test.js
-        └── durableQueue.test.js
+
+---
+
+## 13. Review Workflow State Machine
+
+```mermaid
+stateDiagram-v2
+    [*] --> draft : POST /posts/:id/generate
+    draft --> approved : POST /variants/:id/approve (if validation is valid)
+    draft --> rejected : POST /variants/:id/reject
+    draft --> draft : PATCH /variants/:id
+    rejected --> draft : PATCH /variants/:id (re-edited)
+    approved --> draft : PATCH /variants/:id (resets approval)
+    approved --> queued : POST /variants/:id/schedule
+    queued --> published : Worker Execution Success
+    approved --> published : POST /variants/:id/publish-now
+    published --> [*]
+
+    note right of published
+        Terminal state:
+        Cannot be edited or re-approved.
+    end note
 ```
+
+---
+
+## 14. Adapter Architecture (Polymorphic Zero-Conditional Dispatch)
+
+All publishing targets implement the unified contract defined in [`src/publishers/socialPublisher.js`](file:///d:/Social%20Media%20Studio%20Capstone/src/publishers/socialPublisher.js):
+
+```javascript
+export class SocialPublisher {
+  async publish(variant, context = {}) {
+    // Returns { success, external_id, url, published_at, message, preview, error, duration_ms, raw_response }
+  }
+}
+```
+
+- **Polymorphism Rule:** Core business logic and workers contain **zero** `if (platform === 'telegram')` conditional branching.
+- **Factory Registration:** Adapters are registered in [`PublisherRegistry`](file:///d:/Social%20Media%20Studio%20Capstone/src/publishers/publisherRegistry.js) and resolved dynamically.
+
+---
+
+## 15. Telegram Setup (Real Target)
+
+1. Open Telegram and message `@BotFather` to create a new bot (`/newbot`).
+2. Copy the HTTP API token into `TELEGRAM_BOT_TOKEN` in your `.env`.
+3. Create a Telegram Channel or Group, add your bot as an **Administrator** with permission to post messages.
+4. Set `TELEGRAM_CHAT_ID` in `.env` to your public channel username (e.g. `@MyDevChannel`) or numeric ID (e.g. `-1001234567890`).
+5. **Security Assurance:** Credentials come *strictly* from environment variables. The bot token is never committed, never logged, and redacted in audit responses.
+
+---
+
+## 16. Mock Adapter Behavior
+
+- **`MockXPublisher`:** Simulates X/Twitter tweet posting with 10-50ms synthetic network latency, formats a character-counted preview string (`[Twitter/X Preview] (210/280 chars)`), writes the structured payload to the database, and returns mock status URLs (`https://x.com/SocialStudioBot/status/tw_...`).
+- **`MockLinkedInPublisher`:** Simulates LinkedIn share latency, generates professional previews (`[LinkedIn Professional Preview]`), writes payload to SQLite, and returns URN identifiers (`urn:li:share:...`).
+
+---
+
+## 17. Scheduling Architecture
+
+1. **Client Request:** `POST /variants/:id/schedule` with ISO datetime.
+2. **Database Schedule:** Creates row in SQLite `schedules` with status `queued` and unique `idempotency_key`.
+3. **BullMQ Delayed Task:** Pushes delayed job to BullMQ queue with `delay = scheduled_time - Date.now()`.
+4. **Worker Dispatch:** `PublishWorker` picks up job when due, claims row atomically, and triggers publisher adapter.
+
+---
+
+## 18. Idempotency Strategy
+
+Idempotency is enforced at the **Database Level**, eliminating reliance on volatile memory or queue IDs:
+
+1. **Deterministic Slot Hashing:**
+   $$\text{IdempotencyKey} = \text{SHA-256}(\text{variant\_id} + \text{ISO\_ROUNDED\_SLOT})$$
+2. **SQLite Table Constraint:** `schedules(idempotency_key)` is `UNIQUE`. Duplicate scheduling requests are rejected with `409 Conflict`.
+3. **Partial Unique Index:** `idx_publish_logs_unique_success` on `publish_logs(idempotency_key) WHERE status = 'success'` prevents duplicate success rows.
+4. **Pre-dispatch Lock:** Worker queries `findSuccessByIdempotencyKey(key)` before calling external APIs. If present, it skips dispatch immediately.
+
+---
+
+## 19. Worker Restart Behavior & Reconciliation
+
+When the background worker crashes or the server host restarts:
+1. Pending jobs remain recorded in SQLite (`status = 'queued'` or `status = 'processing'`).
+2. On boot, `ReconciliationService.reconcile()` queries all uncompleted schedules.
+3. Cross-checks against `publish_logs` to ensure no completed job is re-dispatched.
+4. Re-enqueues orphaned schedules into BullMQ with their original idempotency keys.
+5. In-flight jobs are recovered seamlessly with **zero lost tasks and zero double-publications**.
+
+---
+
+## 20. Publish History
+
+Every publication attempt is recorded in `publish_logs` and queryable via `GET /publish-history`:
+```json
+[
+  {
+    "id": "e91fa230-0112-4211-a889-112233445566",
+    "schedule_id": "ad2a5b5b-e298-4d13-b05c-2a00d9a6cc5f",
+    "variant_id": "7b58c732-c649-411a-8bb7-f10f845a7c29",
+    "platform": "telegram",
+    "scheduled_slot": "2026-10-02T15:02:00.000Z",
+    "idempotency_key": "c71e21b730fef6e53a39fbc859235921bbd8108ef942d93e157790b4d4586f37",
+    "attempt_time": "2026-10-02 13:42:25",
+    "status": "success",
+    "external_id": "58292",
+    "url": "https://t.me/FlyRankStudioChannel/58292",
+    "duration_ms": 112
+  }
+]
+```
+
+---
+
+## 21. Known Limitations
+
+- **Telegram Rate Limits:** Telegram Bot API limits channel broadcast rate to ~20-30 messages per minute. Production high-scale deployments should configure BullMQ rate-limiter options.
+- **Single SQLite File:** While WAL mode supports high concurrent read throughput, SQLite restricts write operations to a single process thread at any given microsecond.
+
+---
+
+## 22. Explicit Non-Goals
+
+- **Paid AI Model Integration:** This service intentionally uses deterministic template generators to remain 100% free with zero token fees or credit card requirements.
+- **Frontend UI Framework:** The project is strictly a headless backend REST service.
+- **Live OAuth2 for Twitter/LinkedIn:** Real OAuth credentials for X and LinkedIn are excluded per the project specification; Mock adapters provide full preview and database auditing.
