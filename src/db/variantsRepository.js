@@ -75,6 +75,51 @@ export class VariantsRepository {
     }));
   }
 
+  findAll({ postId, platform, status, limit = 50, offset = 0 } = {}) {
+    let sql = 'SELECT * FROM post_variants';
+    const conditions = [];
+    const params = [];
+
+    if (postId) {
+      conditions.push('post_id = ?');
+      params.push(postId);
+    }
+    if (platform) {
+      conditions.push('platform = ?');
+      params.push(platform);
+    }
+    if (status) {
+      conditions.push('status = ?');
+      params.push(status);
+    }
+
+    if (conditions.length > 0) {
+      sql += ' WHERE ' + conditions.join(' AND ');
+    }
+
+    sql += ' ORDER BY created_at DESC LIMIT ? OFFSET ?';
+    params.push(limit, offset);
+
+    const stmt = this.db.prepare(sql);
+    const rows = stmt.all(...params);
+
+    return rows.map((row) => ({
+      id: row.id,
+      post_id: row.post_id,
+      platform: row.platform,
+      body: row.content,
+      content: row.content,
+      tone: row.tone,
+      hashtags: JSON.parse(row.hashtags_json || '[]'),
+      status: row.status,
+      rejection_reason: row.rejection_reason,
+      validation_status: row.validation_status,
+      validation_errors: JSON.parse(row.validation_errors_json || '[]'),
+      created_at: row.created_at,
+      updated_at: row.updated_at,
+    }));
+  }
+
   deleteByPostId(postId) {
     const stmt = this.db.prepare('DELETE FROM post_variants WHERE post_id = ?');
     return stmt.run(postId).changes;

@@ -102,6 +102,14 @@ export class SocialStudioService {
     return createdVariants;
   }
 
+  listVariants(query = {}) {
+    return this.dbCtx.variants.findAll(query);
+  }
+
+  getVariant(id) {
+    return this.dbCtx.variants.findById(id);
+  }
+
   async createCustomVariant(postId, { platform, content, body, hashtags = [], tone = 'informative' }) {
     const post = this.dbCtx.posts.findById(postId);
     if (!post) {
@@ -139,7 +147,7 @@ export class SocialStudioService {
 
     return this.dbCtx.variants.create({
       postId,
-      platform: normalizedPlat,
+      platform,
       content: finalContent,
       body: finalContent,
       hashtags,
@@ -156,6 +164,14 @@ export class SocialStudioService {
       const err = new Error(`Variant not found with ID: ${variantId}`);
       err.code = 'NOT_FOUND';
       err.statusCode = 404;
+      throw err;
+    }
+
+    // Published variants cannot be edited
+    if (variant.status === VARIANT_STATUS.PUBLISHED) {
+      const err = new Error(`Cannot edit published variant with ID: ${variantId}`);
+      err.code = 'INVALID_STATE_TRANSITION';
+      err.statusCode = 400;
       throw err;
     }
 
@@ -180,6 +196,7 @@ export class SocialStudioService {
       throw err;
     }
 
+    // Editing resets status to draft for re-review
     return this.dbCtx.variants.updateContent(variantId, {
       content: newContent,
       body: newContent,
@@ -201,6 +218,13 @@ export class SocialStudioService {
       throw err;
     }
 
+    if (variant.status === VARIANT_STATUS.PUBLISHED) {
+      const err = new Error(`Cannot re-approve already published variant with ID: ${variantId}`);
+      err.code = 'INVALID_STATE_TRANSITION';
+      err.statusCode = 400;
+      throw err;
+    }
+
     if (variant.validation_status !== VALIDATION_STATUS.VALID) {
       const firstError = variant.validation_errors?.[0]?.message || 'Variant failed constraint validation';
       const err = new Error(`Cannot approve variant: ${firstError}`);
@@ -216,6 +240,7 @@ export class SocialStudioService {
   async rejectVariant(variantId, reason) {
     if (!reason || typeof reason !== 'string' || reason.trim().length === 0) {
       const err = new Error('Rejection reason is required');
+      err.code = 'MISSING_REASON';
       err.statusCode = 400;
       throw err;
     }
@@ -225,6 +250,13 @@ export class SocialStudioService {
       const err = new Error(`Variant not found with ID: ${variantId}`);
       err.code = 'NOT_FOUND';
       err.statusCode = 404;
+      throw err;
+    }
+
+    if (variant.status === VARIANT_STATUS.PUBLISHED) {
+      const err = new Error(`Cannot reject already published variant with ID: ${variantId}`);
+      err.code = 'INVALID_STATE_TRANSITION';
+      err.statusCode = 400;
       throw err;
     }
 
@@ -243,8 +275,18 @@ export class SocialStudioService {
     }
 
     if (variant.status !== VARIANT_STATUS.APPROVED) {
-      const err = new Error(`Only approved variants can be scheduled (current status: '${variant.status}')`);
+      const err = new Error(
+        `Cannot schedule variant in '${variant.status}' status. Only approved variants can be scheduled.`
+      );
       err.code = 'UNAPPROVED_VARIANT';
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const targetDate = new Date(scheduledTime);
+    if (isNaN(targetDate.getTime())) {
+      const err = new Error('Invalid scheduled_time format. Must be a valid ISO 8601 datetime string.');
+      err.code = 'INVALID_DATETIME';
       err.statusCode = 400;
       throw err;
     }
@@ -264,7 +306,7 @@ export class SocialStudioService {
     // Create schedule entry in SQLite
     const schedule = this.dbCtx.schedules.create({
       variantId,
-      scheduledTime: new Date(scheduledTime).toISOString(),
+      scheduledTime: targetDate.toISOString(),
       idempotencyKey,
     });
 
@@ -309,7 +351,7 @@ export class SocialStudioService {
     }
 
     if (variant.status !== VARIANT_STATUS.APPROVED && variant.status !== VARIANT_STATUS.PUBLISHED) {
-      const err = new Error(`Only approved variants can be published (current status: '${variant.status}')`);
+      const err = new Error(`Cannot publish variant in '${variant.status}' status. Only approved variants can be published.`);
       err.code = 'UNAPPROVED_VARIANT';
       err.statusCode = 400;
       throw err;

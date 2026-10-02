@@ -6,7 +6,7 @@ This document contains verification evidence demonstrating that all requirements
 
 ## 1. Automated Test Suite Execution
 
-All 11 test suites containing 36 tests pass completely:
+All 12 test suites containing 43 tests pass completely:
 
 ```text
 > flyrank-capstone-social-studio@1.0.0 test
@@ -14,21 +14,22 @@ All 11 test suites containing 36 tests pass completely:
 
  RUN  v5.0.3 D:/Social Media Studio Capstone
 
- ✓ tests/unit/idempotency.test.js (2 tests) 10ms
- ✓ tests/unit/constraintValidator.test.js (4 tests) 11ms
- ✓ tests/unit/variantGenerator.test.js (1 test) 11ms
- ✓ tests/unit/publishers.test.js (4 tests) 53ms
- ✓ tests/unit/ingestion.test.js (4 tests) 30ms
- ✓ tests/integration/sqlitePersistence.test.js (1 test) 50ms
+ ✓ tests/unit/constraintValidator.test.js (4 tests) 8ms
+ ✓ tests/unit/variantGenerator.test.js (1 test) 9ms
+ ✓ tests/unit/publishers.test.js (4 tests) 42ms
+ ✓ tests/unit/idempotency.test.js (2 tests) 12ms
+ ✓ tests/unit/ingestion.test.js (4 tests) 33ms
+ ✓ tests/integration/sqlitePersistence.test.js (1 test) 51ms
  ✓ tests/integration/durableQueue.test.js (2 tests) 28ms
- ✓ tests/integration/workflow.test.js (1 test) 58ms
- ✓ tests/integration/ingestionApi.test.js (6 tests) 120ms
- ✓ tests/integration/api.test.js (4 tests) 121ms
- ✓ tests/integration/variantGeneration.test.js (7 tests) 160ms
+ ✓ tests/integration/workflow.test.js (1 test) 48ms
+ ✓ tests/integration/ingestionApi.test.js (6 tests) 100ms
+ ✓ tests/integration/api.test.js (4 tests) 140ms
+ ✓ tests/integration/variantGeneration.test.js (7 tests) 174ms
+ ✓ tests/integration/reviewWorkflow.test.js (7 tests) 209ms
 
- Test Files  11 passed (11)
-      Tests  36 passed (36)
-   Duration  1.74s
+ Test Files  12 passed (12)
+      Tests  43 passed (43)
+   Duration  2.01s
 ```
 
 ---
@@ -183,7 +184,43 @@ All 11 test suites containing 36 tests pass completely:
 
 ---
 
-## 6. SocialPublisher Adapters
+## 6. Phase 4: Human Review Workflow State Transition Proofs
+
+**Test Suite:** `tests/integration/reviewWorkflow.test.js`
+
+### A. Draft $\to$ Schedule Attempt (Must Be Rejected)
+- Request: `POST /variants/:id/schedule` while `status = 'draft'`
+- Response: `400 Bad Request`
+- Error: `"Cannot schedule variant in 'draft' status. Only approved variants can be scheduled."`
+
+### B. Rejected $\to$ Schedule Attempt (Must Be Rejected)
+- Request: `POST /variants/:id/schedule` after `POST /variants/:id/reject`
+- Response: `400 Bad Request`
+- Error: `"Cannot schedule variant in 'rejected' status. Only approved variants can be scheduled."`
+
+### C. Approved $\to$ Schedule Attempt (Accepted)
+- Request: `POST /variants/:id/schedule` after `POST /variants/:id/approve`
+- Response: `201 Created`
+- Payload: `{ "success": true, "data": { "id": "...", "status": "queued", ... } }`
+
+### D. Approved $\to$ Edit (Accepted & Resets to Draft)
+- Request: `PATCH /variants/:id` on approved variant
+- Response: `200 OK`
+- Database Status: Resets automatically to `status: 'draft'` for re-review.
+
+### E. Published $\to$ Edit (Must Be Rejected)
+- Request: `PATCH /variants/:id` on published variant
+- Response: `400 Bad Request`
+- Error: `"Cannot edit published variant with ID: ..."`
+
+### F. Published $\to$ Approve (Must Be Rejected)
+- Request: `POST /variants/:id/approve` on published variant
+- Response: `400 Bad Request`
+- Error: `"Cannot re-approve already published variant with ID: ..."`
+
+---
+
+## 7. SocialPublisher Adapters
 
 ### TelegramPublisher (Real Target)
 - Direct API endpoint: `https://api.telegram.org/bot<TOKEN>/sendMessage`.
@@ -201,7 +238,7 @@ All 11 test suites containing 36 tests pass completely:
 
 ---
 
-## 7. Idempotency & Durable Scheduling
+## 8. Idempotency & Durable Scheduling
 
 ### Idempotency Key Generation
 - Format: `SHA-256(variant_id + ISO_ROUNDED_SLOT)`.
@@ -215,7 +252,7 @@ All 11 test suites containing 36 tests pass completely:
 
 ---
 
-## 8. Publish Log & Audit Trail
+## 9. Publish Log & Audit Trail
 
 Every publishing attempt generates an audit row in `publish_logs`:
 ```json
